@@ -2,9 +2,9 @@
 node_modules/
 
 # Build outputs
-dist/
 build/
 *.zip
+# Keep dist/ for GitHub installs
 
 # Development environment
 .idea/
