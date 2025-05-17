@@ -35,10 +35,7 @@
   "web_accessible_resources": [
     {
       "resources": ["lib/*", "dist/*"],
-      "matches": [
-        "*://*.linkedin.com/mynetwork/invitation-manager/*",
-        "*://*.linkedin.com/search/results/*"
-      ]
+      "matches": ["*://*.linkedin.com/*"]
     }
   ],
   "icons": {
