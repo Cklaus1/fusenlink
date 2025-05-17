@@ -1,0 +1,25 @@
+{
+  "name": "linkedin-bulk-actions",
+  "version": "1.0.0",
+  "description": "Chrome extension for LinkedIn bulk actions",
+  "main": "background.js",
+  "scripts": {
+    "test": "jest",
+    "build": "echo \"No build step required\""
+  },
+  "keywords": [
+    "chrome-extension",
+    "linkedin",
+    "automation"
+  ],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/chrome": "^0.0.246",
+    "@types/jest": "^29.5.5",
+    "jest": "^29.7.0",
+    "jest-chrome": "^0.8.0",
+    "jest-environment-jsdom": "^29.7.0",
+    "puppeteer": "^21.3.4"
+  }
+}
