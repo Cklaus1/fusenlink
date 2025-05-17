@@ -2,10 +2,9 @@
   "manifest_version": 3,
   "name": "LinkedIn Bulk Actions",
   "version": "1.0.0",
-  "description": "Automate accepting/denying invitations and sending connection requests on LinkedIn",
+  "description": "Automate accepting/denying invitations and sending connection requests on LinkedIn. Privacy policy: https://github.com/Cklaus1/fusenlink/blob/main/PRIVACY.md",
   "author": "FusenLink",
   "homepage_url": "https://github.com/Cklaus1/fusenlink",
-  "privacy_policy_url": "https://github.com/Cklaus1/fusenlink/blob/main/PRIVACY.md",
   "permissions": [
     "activeTab",
     "scripting",
