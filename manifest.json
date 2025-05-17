@@ -21,7 +21,10 @@
   },
   "content_scripts": [
     {
-      "matches": ["*://*.linkedin.com/*"],
+      "matches": [
+        "*://*.linkedin.com/mynetwork/invitation-manager/*",
+        "*://*.linkedin.com/search/results/*"
+      ],
       "js": ["content.js"]
     }
   ],
@@ -29,7 +32,10 @@
   "web_accessible_resources": [
     {
       "resources": ["lib/*", "dist/*"],
-      "matches": ["*://*.linkedin.com/*"]
+      "matches": [
+        "*://*.linkedin.com/mynetwork/invitation-manager/*",
+        "*://*.linkedin.com/search/results/*"
+      ]
     }
   ],
   "icons": {
