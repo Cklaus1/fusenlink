@@ -9,7 +9,7 @@ const DEFAULT_SETTINGS = {
 // Initialize default settings on installation
 chrome.runtime.onInstalled.addListener(async () => {
   console.log('LinkedIn Bulk Actions extension installed');
-  
+
   // Set default settings
   await chrome.storage.sync.set(DEFAULT_SETTINGS);
   console.log('Default settings initialized:', DEFAULT_SETTINGS);
@@ -27,7 +27,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     });
     return true; // Keep the message channel open for async response
   }
-  
+
   // Handle setSettings request
   if (message.action === 'setSettings' && message.settings) {
     chrome.storage.sync.set(message.settings, () => {

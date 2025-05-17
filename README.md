@@ -77,9 +77,19 @@ npm test
 
 ### Building
 
-The extension works directly from source, but you can create a package with:
+Build the extension using webpack:
 ```
-zip -r linkedin-bulk-actions.zip * -x "node_modules/*" "*.git*" "tests/*"
+npm run build
+```
+
+If npm installation fails, you can use the included build script:
+```
+./build.sh
+```
+
+Or create a package for distribution:
+```
+zip -r linkedin-bulk-actions.zip * -x "node_modules/*" "*.git*" "tests/*" "dist/*"
 ```
 
 ## Security Notes
