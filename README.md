@@ -102,7 +102,9 @@ This extension:
 
 ## License
 
-MIT
+This project is licensed under the [Creative Commons Attribution-NonCommercial 4.0 International License (CC BY-NC 4.0)](LICENSE.md).
+
+See the [LICENSE.md](LICENSE.md) file for details.
 
 ## Contributing
 

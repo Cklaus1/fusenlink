@@ -13,7 +13,7 @@
     "automation"
   ],
   "author": "",
-  "license": "MIT",
+  "license": "CC-BY-NC-4.0",
   "devDependencies": {
     "@types/chrome": "^0.0.246",
     "@types/jest": "^29.5.5",
