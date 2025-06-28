@@ -286,7 +286,7 @@ function findConnectButtons() {
   const buttons = [];
 
   // Try different selectors for Connect buttons
-
+  
   // 1. Direct connect buttons (most common)
   const directButtons = Array.from(document.querySelectorAll('button'))
     .filter(button => {
@@ -295,22 +295,16 @@ function findConnectButtons() {
     });
 
   buttons.push(...directButtons);
-
-  // 2. Find and expand "More" dropdown buttons to reveal hidden Connect options
-  const moreButtons = findMoreDropdownButtons();
-  for (const moreButton of moreButtons) {
-    // Store information about this dropdown for later cleanup
-    const dropdownInfo = {
-      button: moreButton,
-      wasProcessed: false
-    };
-
-    // Add a special property to the button so we can identify it
-    moreButton._hasDropdownInfo = true;
-
-    // Add to our list of buttons with the dropdown info attached
-    buttons.push(moreButton);
-  }
+  
+  // 2. Find "More" dropdown buttons that might contain Connect options
+  const moreButtons = Array.from(document.querySelectorAll('button'))
+    .filter(button => {
+      const text = button.textContent.trim().toLowerCase();
+      return (text === 'more' || text.includes('more')) &&
+             !button.closest('[aria-hidden="true"]');
+    });
+  
+  buttons.push(...moreButtons);
 
   return buttons;
 }
@@ -510,7 +504,7 @@ async function checkForSecurityChallenge() {
   const securityMessages = [
     'security check',
     'please verify',
-    'confirm you're not a robot',
+    'confirm you are not a robot',
     'check your network',
     'unusual amount of activity',
     'too many requests',

@@ -1,7 +1,7 @@
 // LinkedIn Bulk Actions - Combined Content Script
 // Handles accepting/denying invitations, search connect requests, and button injection
 
-console.log("LinkedIn Bulk Actions: Content script loaded");
+console.log("LinkedIn Bulk Actions: Content script loaded - Version 2.0 with improved button detection");
 
 // Global state
 let stopRequested = false;
@@ -33,7 +33,7 @@ async function getSettings() {
 // Function to inject buttons
 function addButtons() {
   // Only run on invitation manager page
-  if (!window.location.href.includes('/mynetwork/invitation-manager/')) {
+  if (!window.location.href.includes('/mynetwork/invitation-manager/received/')) {
     console.log("LinkedIn Bulk Actions: Not on invitation manager page");
     return;
   }
@@ -381,12 +381,17 @@ async function processInvites(actionLabel, buttonText) {
         break; // User requested stop during security pause
       }
 
+      // Brief wait to ensure page is fully loaded
+      await delay(100);
+
       // Find all visible action buttons matching the text
       const actionButtons = findActionButtons(buttonText);
+      console.log(`LinkedIn Bulk Actions: Found ${actionButtons.length} action buttons for "${buttonText}"`);
 
       // Update count of total items (best estimate)
       if (totalCount === 0) {
         totalCount = countInvitationCards();
+        console.log(`LinkedIn Bulk Actions: Initial invitation count: ${totalCount}`);
         updateProgress(processedCount, totalCount, getElapsedSeconds());
       }
 
@@ -467,22 +472,52 @@ async function processInvites(actionLabel, buttonText) {
  * @returns {HTMLElement[]} Array of matching button elements
  */
 function findActionButtons(buttonText) {
-  // Try different selectors to find buttons
-  // First try using data attributes that LinkedIn might have
-  let buttons = Array.from(document.querySelectorAll(`button[data-test-id*="${buttonText.toLowerCase()}"]`));
+  // Primary method: Use the data-view-name attribute which is most reliable
+  let buttons = Array.from(document.querySelectorAll('button[data-view-name="invitation-action"]'));
   
-  // Fall back to text content if no buttons found
-  if (buttons.length === 0) {
-    // Get all buttons
-    const allButtons = Array.from(document.querySelectorAll('button'));
-    
-    // Filter to those containing the text
-    buttons = allButtons.filter(button => {
+  if (buttons.length > 0) {
+    // Filter buttons by their text content (nested in spans)
+    buttons = buttons.filter(button => {
       const text = button.textContent.trim();
-      return text === buttonText || text === buttonText + ' invitation';
+      return text === buttonText;
     });
+    
+    if (buttons.length > 0) {
+      console.log(`LinkedIn Bulk Actions: Found ${buttons.length} buttons with data-view-name and text "${buttonText}"`);
+      return buttons;
+    }
   }
   
+  // Fallback method: Use aria-label patterns
+  const labelPatterns = {
+    'Accept': ['aria-label*="Accept"', 'aria-label*="invitation"'],
+    'Ignore': ['aria-label*="Ignore"', 'aria-label*="invitation"']
+  };
+  
+  if (labelPatterns[buttonText]) {
+    // Try aria-label patterns
+    const ariaButtons = Array.from(document.querySelectorAll('button'))
+      .filter(button => {
+        const ariaLabel = button.getAttribute('aria-label') || '';
+        const lowerLabel = ariaLabel.toLowerCase();
+        return lowerLabel.includes(buttonText.toLowerCase()) && 
+               lowerLabel.includes('invitation');
+      });
+    
+    if (ariaButtons.length > 0) {
+      console.log(`LinkedIn Bulk Actions: Found ${ariaButtons.length} buttons with aria-label pattern for "${buttonText}"`);
+      return ariaButtons;
+    }
+  }
+  
+  // Final fallback: Text content search
+  const allButtons = Array.from(document.querySelectorAll('button'));
+  buttons = allButtons.filter(button => {
+    const text = button.textContent.trim();
+    return text === buttonText;
+  });
+  
+  console.log(`LinkedIn Bulk Actions: Found ${buttons.length} buttons with text content "${buttonText}"`);
   return buttons;
 }
 
@@ -491,11 +526,20 @@ function findActionButtons(buttonText) {
  * @returns {number} The number of invitation cards found
  */
 function countInvitationCards() {
-  // Try different selectors for invitation cards
-  const cards = document.querySelectorAll('.invitation-card') || 
-                document.querySelectorAll('.artdeco-list__item') ||
-                document.querySelectorAll('li.artdeco-list');
+  // Use the correct LinkedIn selector for invitation containers
+  let cards = document.querySelectorAll('[data-view-name="pending-invitation"]');
   
+  // Fallback to role-based selector
+  if (cards.length === 0) {
+    cards = document.querySelectorAll('[role="listitem"][componentkey*="invitation"]');
+  }
+  
+  // Another fallback to common invitation container patterns
+  if (cards.length === 0) {
+    cards = document.querySelectorAll('.invitation-card, .invitation-card__container, [class*="invitation"]');
+  }
+  
+  console.log(`LinkedIn Bulk Actions: Found ${cards.length} invitation cards`);
   return cards.length;
 }
 
@@ -526,22 +570,25 @@ async function dismissConfirmationModal() {
  */
 async function waitForNewInvitations() {
   const countBefore = countInvitationCards();
+  console.log(`LinkedIn Bulk Actions: Waiting for new invitations, current count: ${countBefore}`);
   
   // Wait for content to potentially load
   let attempts = 0;
-  const maxAttempts = 4; // Try for up to 4 * 200ms = 800ms
+  const maxAttempts = 8; // Try for up to 8 * 300ms = 2.4s (longer wait for network)
   
   while (attempts < maxAttempts) {
-    await delay(200);
+    await delay(300);
     const currentCount = countInvitationCards();
     
     if (currentCount > countBefore) {
+      console.log(`LinkedIn Bulk Actions: New invitations loaded: ${currentCount} (was ${countBefore})`);
       return true; // New invitations loaded
     }
     
     attempts++;
   }
   
+  console.log(`LinkedIn Bulk Actions: No new invitations found after waiting`);
   return false; // No new invitations found after waiting
 }
 

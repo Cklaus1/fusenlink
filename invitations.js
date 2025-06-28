@@ -248,7 +248,7 @@ async function processInvites(actionLabel, buttonText) {
 function findActionButtons(buttonText) {
   // Try different selectors to find buttons
   // First try using data attributes that LinkedIn might have
-  let buttons = Array.from(document.querySelectorAll(`button[data-test-id*="${buttonText.toLowerCase()}"]`));
+  let buttons = Array.from(document.querySelectorAll(`button[aria-label*="${buttonText}"]`));
   
   // Fall back to text content if no buttons found
   if (buttons.length === 0) {
@@ -271,9 +271,7 @@ function findActionButtons(buttonText) {
  */
 function countInvitationCards() {
   // Try different selectors for invitation cards
-  const cards = document.querySelectorAll('.invitation-card') || 
-                document.querySelectorAll('.artdeco-list__item') ||
-                document.querySelectorAll('li.artdeco-list');
+  const cards = document.querySelectorAll('.invitation-card__container');
   
   return cards.length;
 }
@@ -353,7 +351,7 @@ async function checkForSecurityChallenge() {
   const securityMessages = [
     'security check',
     'please verify',
-    'confirm you're not a robot',
+    'confirm you are not a robot',
     'check your network',
     'unusual amount of activity',
     'too many requests',
