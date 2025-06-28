@@ -1,7 +1,7 @@
 // LinkedIn Bulk Actions - Combined Content Script
 // Handles accepting/denying invitations, search connect requests, and button injection
 
-console.log("LinkedIn Bulk Actions: Content script loaded - Version 2.0 with improved button detection");
+// LinkedIn Bulk Actions content script loaded
 
 // Global state
 let stopRequested = false;
@@ -19,40 +19,59 @@ let isVisible = false;
 // Settings function
 async function getSettings() {
   return new Promise((resolve) => {
-    chrome.runtime.sendMessage({ action: 'getSettings' }, (response) => {
-      if (response) {
-        resolve(response);
-      } else {
-        // Default settings if background doesn't respond
-        resolve({ maxInvites: 50, delayMs: 1500 });
-      }
-    });
+    try {
+      chrome.runtime.sendMessage({ action: 'getSettings' }, (response) => {
+        if (chrome.runtime.lastError) {
+          resolve({ maxInvites: 50, delayMs: 1500 });
+          return;
+        }
+        
+        if (response) {
+          resolve(response);
+        } else {
+          // Default settings if background doesn't respond
+          resolve({ maxInvites: 50, delayMs: 1500 });
+        }
+      });
+    } catch (error) {
+      resolve({ maxInvites: 50, delayMs: 1500 });
+    }
   });
 }
 
 // Function to inject buttons
 function addButtons() {
-  // Only run on invitation manager page
-  if (!window.location.href.includes('/mynetwork/invitation-manager/received/')) {
-    console.log("LinkedIn Bulk Actions: Not on invitation manager page");
+  // Only run on invitation manager page - check for various URL patterns
+  const url = window.location.href;
+  const pathname = window.location.pathname;
+  
+  // Check if we're on any invitation manager page
+  const isInvitationManager = url.includes('/mynetwork/invitation-manager/') || 
+                              pathname.includes('/mynetwork/invitation-manager/');
+  
+  if (!isInvitationManager) {
     return;
   }
-
-  console.log("LinkedIn Bulk Actions: On invitation manager page, adding buttons");
 
   // Exit if buttons already exist
   if (document.querySelector('.li-bulk-action-buttons')) {
-    console.log("LinkedIn Bulk Actions: Buttons already exist");
     return;
   }
 
-  // Create container for buttons
+  // Create container for buttons - positioned at bottom left
   const buttonContainer = document.createElement('div');
   buttonContainer.className = 'li-bulk-action-buttons';
+  buttonContainer.style.position = 'fixed';
+  buttonContainer.style.bottom = '20px';
+  buttonContainer.style.left = '20px';
   buttonContainer.style.display = 'flex';
   buttonContainer.style.gap = '12px';
-  buttonContainer.style.margin = '16px 0';
-  buttonContainer.style.padding = '0 16px';
+  buttonContainer.style.zIndex = '9999';
+  buttonContainer.style.padding = '12px';
+  buttonContainer.style.backgroundColor = 'white';
+  buttonContainer.style.borderRadius = '8px';
+  buttonContainer.style.boxShadow = '0 2px 10px rgba(0, 0, 0, 0.15)';
+  buttonContainer.style.border = '1px solid #e0e0e0';
 
   // Create Accept All button
   const acceptAllButton = document.createElement('button');
@@ -108,23 +127,8 @@ function addButtons() {
   buttonContainer.appendChild(acceptAllButton);
   buttonContainer.appendChild(denyAllButton);
   
-  // Add button container before main content
-  const headerSection = document.querySelector('header') || 
-                       document.querySelector('.scaffold-layout__header') ||
-                       document.querySelector('main');
-  
-  console.log("LinkedIn Bulk Actions: Header elements found:", headerSection ? 'Yes' : 'No');
-                       
-  if (headerSection && headerSection.parentNode) {
-    console.log("LinkedIn Bulk Actions: Inserting buttons before header");
-    headerSection.parentNode.insertBefore(buttonContainer, headerSection);
-  } else {
-    // Fallback to start of body if header not found
-    console.log("LinkedIn Bulk Actions: Header not found, inserting at beginning of body");
-    document.body.insertBefore(buttonContainer, document.body.firstChild);
-  }
-  
-  console.log("LinkedIn Bulk Actions: Buttons added successfully");
+  // Add floating button container to page
+  document.body.appendChild(buttonContainer);
 
   // Add click handlers
   acceptAllButton.addEventListener('click', () => {
@@ -375,23 +379,21 @@ async function processInvites(actionLabel, buttonText) {
 
     // Continue processing until stopped or no more invitations
     while (!stopRequested) {
-      // Check for security challenges or rate limits before proceeding
-      const securityPaused = await checkForSecurityChallenge();
-      if (securityPaused && stopRequested) {
-        break; // User requested stop during security pause
-      }
+      // TEMPORARILY DISABLED: Check for security challenges or rate limits before proceeding
+      // const securityPaused = await checkForSecurityChallenge();
+      // if (securityPaused && stopRequested) {
+      //   break; // User requested stop during security pause
+      // }
 
       // Brief wait to ensure page is fully loaded
       await delay(100);
 
       // Find all visible action buttons matching the text
       const actionButtons = findActionButtons(buttonText);
-      console.log(`LinkedIn Bulk Actions: Found ${actionButtons.length} action buttons for "${buttonText}"`);
 
       // Update count of total items (best estimate)
       if (totalCount === 0) {
         totalCount = countInvitationCards();
-        console.log(`LinkedIn Bulk Actions: Initial invitation count: ${totalCount}`);
         updateProgress(processedCount, totalCount, getElapsedSeconds());
       }
 
@@ -416,13 +418,13 @@ async function processInvites(actionLabel, buttonText) {
           // Wait between actions to avoid rate limiting
           await delay(delayMs / 3); // Use shorter delay for smooth UX
 
-          // Periodically check for security challenges (every 5 actions)
-          if (processedCount % 5 === 0) {
-            const securityPaused = await checkForSecurityChallenge();
-            if (securityPaused && stopRequested) {
-              break; // User requested stop during security pause
-            }
-          }
+          // TEMPORARILY DISABLED: Periodically check for security challenges (every 5 actions)
+          // if (processedCount % 5 === 0) {
+          //   const securityPaused = await checkForSecurityChallenge();
+          //   if (securityPaused && stopRequested) {
+          //     break; // User requested stop during security pause
+          //   }
+          // }
         } catch (err) {
           console.error('Error processing invitation:', err);
           skippedCount++;
@@ -483,7 +485,6 @@ function findActionButtons(buttonText) {
     });
     
     if (buttons.length > 0) {
-      console.log(`LinkedIn Bulk Actions: Found ${buttons.length} buttons with data-view-name and text "${buttonText}"`);
       return buttons;
     }
   }
@@ -505,7 +506,6 @@ function findActionButtons(buttonText) {
       });
     
     if (ariaButtons.length > 0) {
-      console.log(`LinkedIn Bulk Actions: Found ${ariaButtons.length} buttons with aria-label pattern for "${buttonText}"`);
       return ariaButtons;
     }
   }
@@ -517,7 +517,6 @@ function findActionButtons(buttonText) {
     return text === buttonText;
   });
   
-  console.log(`LinkedIn Bulk Actions: Found ${buttons.length} buttons with text content "${buttonText}"`);
   return buttons;
 }
 
@@ -539,7 +538,6 @@ function countInvitationCards() {
     cards = document.querySelectorAll('.invitation-card, .invitation-card__container, [class*="invitation"]');
   }
   
-  console.log(`LinkedIn Bulk Actions: Found ${cards.length} invitation cards`);
   return cards.length;
 }
 
@@ -570,7 +568,6 @@ async function dismissConfirmationModal() {
  */
 async function waitForNewInvitations() {
   const countBefore = countInvitationCards();
-  console.log(`LinkedIn Bulk Actions: Waiting for new invitations, current count: ${countBefore}`);
   
   // Wait for content to potentially load
   let attempts = 0;
@@ -581,14 +578,12 @@ async function waitForNewInvitations() {
     const currentCount = countInvitationCards();
     
     if (currentCount > countBefore) {
-      console.log(`LinkedIn Bulk Actions: New invitations loaded: ${currentCount} (was ${countBefore})`);
       return true; // New invitations loaded
     }
     
     attempts++;
   }
   
-  console.log(`LinkedIn Bulk Actions: No new invitations found after waiting`);
   return false; // No new invitations found after waiting
 }
 
@@ -617,33 +612,44 @@ async function checkForSecurityChallenge() {
   // Check for CAPTCHA challenge iframe
   const captchaFrame = document.querySelector('iframe[src*="challenge"]');
 
-  // Check for rate limit or security messages
+  // Check for rate limit or security messages - but only in modals, alerts, or specific containers
   const securityMessages = [
     'security check',
-    'please verify',
+    'please verify you are not a robot',
     'confirm you are not a robot',
-    'check your network',
     'unusual amount of activity',
     'too many requests',
-    'rate limit',
+    'rate limit exceeded',
     'try again later'
   ];
 
-  // Find text nodes containing security messages
-  const textElements = document.querySelectorAll('p, h1, h2, h3, div, span');
+  // Only check specific containers that would contain security messages, not all page text
+  const securityContainers = document.querySelectorAll([
+    '[role="dialog"]',           // Modals
+    '[role="alert"]',            // Alert messages
+    '.artdeco-modal',            // LinkedIn modal class
+    '.challenge-page',           // Challenge page container
+    '.security-challenge',       // Security challenge container
+    '.error-message',            // Error message containers
+    '.captcha-container'         // CAPTCHA containers
+  ].join(', '));
+  
   let securityMessageElement = null;
+  let foundMessage = '';
 
-  for (const element of textElements) {
-    const text = element.textContent.toLowerCase();
-    if (securityMessages.some(msg => text.includes(msg))) {
-      securityMessageElement = element;
+  for (const container of securityContainers) {
+    const text = container.textContent.toLowerCase();
+    const matchedMessage = securityMessages.find(msg => text.includes(msg));
+    if (matchedMessage) {
+      securityMessageElement = container;
+      foundMessage = matchedMessage;
       break;
     }
   }
-
+  
   // If challenge detected, pause and wait for user to resolve
   if (captchaFrame || securityMessageElement) {
-    updateStatus('Paused – resolve security challenge to continue');
+    updateStatus(`Paused – resolve security challenge to continue (${foundMessage || 'CAPTCHA'})`);
     updateProgress(processedCount, totalCount, getElapsedSeconds());
 
     // Wait until the challenge is gone
@@ -702,15 +708,12 @@ async function checkForSecurityChallenge() {
 function addSearchButton() {
   // Only run on search results pages
   if (!window.location.href.includes('/search/results/')) {
-    console.log("LinkedIn Bulk Actions: Not on search results page");
     return;
   }
 
-  console.log("LinkedIn Bulk Actions: On search results page, adding Connect with All button");
 
   // Exit if button already exists
   if (document.querySelector('.li-bulk-connect-button')) {
-    console.log("LinkedIn Bulk Actions: Connect button already exists");
     return;
   }
 
@@ -733,7 +736,7 @@ function addSearchButton() {
 
     // Create the button
     const connectButton = document.createElement('button');
-    connectButton.textContent = `Connect with All (≤ ${maxInvites})`;
+    connectButton.textContent = `Connect All Pages (≤ ${maxInvites})`;
     connectButton.className = 'li-bulk-connect-button';
 
     // Apply LinkedIn-like styling
@@ -770,12 +773,10 @@ function addSearchButton() {
     // Add wrapper to body
     document.body.appendChild(wrapperElement);
 
-    console.log("LinkedIn Bulk Actions: Connect with All button added as floating element");
 
     // Add a persistent check that will re-add the button if it gets removed
     const buttonObserver = new MutationObserver(() => {
       if (!document.querySelector('.li-bulk-connect-button')) {
-        console.log("LinkedIn Bulk Actions: Connect button was removed, re-adding");
 
         // If our wrapper was removed, add it again
         if (!document.getElementById('li-bulk-connect-wrapper')) {
@@ -834,7 +835,6 @@ async function sendConnectRequests(max) {
       
       // Find connect buttons on the page
       const connectButtons = findConnectButtons();
-      console.log("LinkedIn Bulk Actions: Found", connectButtons.length, "connect buttons");
       
       // Update total count (best estimate)
       if (totalCount === 0) {
@@ -851,10 +851,19 @@ async function sendConnectRequests(max) {
         // Wait for new content to load
         const foundMoreResults = await waitForNewResults();
         
-        // If no new results loaded, we're done
+        // If no new results loaded, try going to next page
         if (!foundMoreResults) {
-          updateStatus('No more profiles with Connect button found');
-          break;
+          updateStatus('Trying to go to next page...');
+          const nextPageClicked = await goToNextPage();
+          
+          if (nextPageClicked) {
+            updateStatus('Moved to next page, continuing...');
+            await delay(2000); // Wait for page to load
+            continue;
+          } else {
+            updateStatus('No more pages available');
+            break;
+          }
         }
         
         // Continue to next iteration to find buttons in newly loaded content
@@ -868,7 +877,6 @@ async function sendConnectRequests(max) {
         }
         
         const button = connectButtons[i];
-        console.log("LinkedIn Bulk Actions: Processing connect button", i+1);
 
         try {
           // Check if this is a "More" dropdown button that needs to be expanded
@@ -1048,8 +1056,6 @@ async function handleSendInviteModal() {
     });
 
   if (skipNoteButtons.length > 0) {
-    console.log("LinkedIn Bulk Actions: Found 'Send without a note' option, clicking it");
-    console.log("Button text:", skipNoteButtons[0].textContent.trim());
     // Click the button to skip adding a note
     skipNoteButtons[0].click();
     await delay(300); // Wait for any subsequent modal
@@ -1064,7 +1070,6 @@ async function handleSendInviteModal() {
     });
 
   if (sendButtons.length > 0) {
-    console.log("LinkedIn Bulk Actions: Found Send button, clicking it");
     // Click the send button
     sendButtons[0].click();
     return true;
@@ -1082,7 +1087,6 @@ async function handleSendInviteModal() {
     });
 
   if (connectButtons.length > 0) {
-    console.log("LinkedIn Bulk Actions: Found primary action button, clicking it");
     connectButtons[0].click();
     return true;
   }
@@ -1135,8 +1139,71 @@ async function waitForNewResults() {
   return false; // No new results found after waiting
 }
 
+/**
+ * Try to go to the next page of search results
+ * @returns {Promise<boolean>} True if next page button was found and clicked
+ */
+async function goToNextPage() {
+  
+  // Try different selectors for the next page button
+  const nextButtonSelectors = [
+    'button[aria-label="Next"]',
+    'button[aria-label="Next page"]', 
+    'button[aria-label="Go to next page"]',
+    '.artdeco-pagination__button--next',
+    '.artdeco-pagination__button[aria-label*="Next"]',
+    'button:has(li-icon[type="chevron-right"])',
+    'button:has(svg[data-test-icon="chevron-right"])',
+    'a[aria-label="Next"]',
+    'a[aria-label="Next page"]'
+  ];
+  
+  let nextButton = null;
+  
+  for (const selector of nextButtonSelectors) {
+    try {
+      const buttons = document.querySelectorAll(selector);
+      for (const button of buttons) {
+        // Check if button is visible and not disabled
+        if (button.offsetParent !== null && !button.disabled && !button.classList.contains('disabled')) {
+          nextButton = button;
+          break;
+        }
+      }
+      if (nextButton) break;
+    } catch (err) {
+      // Skip invalid selectors
+      continue;
+    }
+  }
+  
+  // If no specific next button found, try finding by text content
+  if (!nextButton) {
+    const allButtons = Array.from(document.querySelectorAll('button, a'));
+    for (const button of allButtons) {
+      const text = button.textContent.trim().toLowerCase();
+      const ariaLabel = (button.getAttribute('aria-label') || '').toLowerCase();
+      
+      if ((text === 'next' || text.includes('next page') || 
+           ariaLabel.includes('next') || ariaLabel.includes('page')) &&
+          button.offsetParent !== null && !button.disabled) {
+        nextButton = button;
+        break;
+      }
+    }
+  }
+  
+  if (nextButton) {
+    nextButton.click();
+    return true;
+  }
+  
+  return false;
+}
+
 // Initialize buttons based on the current page
 function initializeButtons() {
+  
   // For invitation manager
   if (window.location.href.includes('/mynetwork/invitation-manager/')) {
     setTimeout(addButtons, 1000);
@@ -1146,23 +1213,21 @@ function initializeButtons() {
   if (window.location.href.includes('/search/results/')) {
     setTimeout(addSearchButton, 1000);
   }
+  
 }
 
 // Run on document load
 document.addEventListener('DOMContentLoaded', () => {
-  console.log("LinkedIn Bulk Actions: DOMContentLoaded event");
   initializeButtons();
 });
 
 // Run on window load
 window.addEventListener('load', () => {
-  console.log("LinkedIn Bulk Actions: window.load event");
   initializeButtons();
 });
 
 // Run immediately if document is already loaded
 if (document.readyState === 'complete' || document.readyState === 'interactive') {
-  console.log("LinkedIn Bulk Actions: Document already loaded");
   initializeButtons();
 }
 
@@ -1171,7 +1236,6 @@ let lastUrl = window.location.href;
 const observer = new MutationObserver(() => {
   if (lastUrl !== window.location.href) {
     lastUrl = window.location.href;
-    console.log("LinkedIn Bulk Actions: URL changed to", lastUrl);
     
     // Initialize buttons for the new page
     initializeButtons();
@@ -1180,3 +1244,8 @@ const observer = new MutationObserver(() => {
 
 // Start observing
 observer.observe(document, {subtree: true, childList: true});
+
+// Manual trigger functions (for debugging if needed)
+// window.forceAddButtons = function() { addButtons(); };
+// window.forceAddSearchButton = function() { addSearchButton(); };
+

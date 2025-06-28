@@ -8,11 +8,8 @@ const DEFAULT_SETTINGS = {
 
 // Initialize default settings on installation
 chrome.runtime.onInstalled.addListener(async () => {
-  console.log('LinkedIn Bulk Actions extension installed');
-
   // Set default settings
   await chrome.storage.sync.set(DEFAULT_SETTINGS);
-  console.log('Default settings initialized:', DEFAULT_SETTINGS);
 });
 
 // Handle messages from content scripts and options page
