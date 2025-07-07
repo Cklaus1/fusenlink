@@ -1,1 +1,61 @@
-(()=>{const e=document.getElementById("settingsForm"),t=document.getElementById("maxInvites"),s=document.getElementById("delayMs"),n=document.getElementById("toast");document.addEventListener("DOMContentLoaded",async()=>{chrome.runtime.sendMessage({action:"getSettings"},e=>{t.value=e.maxInvites,s.value=e.delayMs})}),e.addEventListener("submit",e=>{e.preventDefault();const a=parseInt(t.value,10),d=parseInt(s.value,10);if(isNaN(a)||a<1)return void(t.value=50);if(isNaN(d)||d<500)return void(s.value=1500);const i={maxInvites:a,delayMs:d};chrome.runtime.sendMessage({action:"setSettings",settings:i},()=>{n.classList.add("show"),setTimeout(()=>{n.classList.remove("show")},3e3)})})})();
+// LinkedIn Bulk Actions - Options Page Script
+
+// Default settings
+const DEFAULT_SETTINGS = {
+  maxInvites: 50,
+  delayMs: 1500
+};
+
+// DOM Elements
+const form = document.getElementById('settingsForm');
+const maxInvitesInput = document.getElementById('maxInvites');
+const delayMsInput = document.getElementById('delayMs');
+const toast = document.getElementById('toast');
+
+// Load current settings
+document.addEventListener('DOMContentLoaded', async () => {
+  // Get settings from storage
+  chrome.runtime.sendMessage({ action: 'getSettings' }, (settings) => {
+    // Set form values
+    maxInvitesInput.value = settings.maxInvites;
+    delayMsInput.value = settings.delayMs;
+  });
+});
+
+// Save settings
+form.addEventListener('submit', (e) => {
+  e.preventDefault();
+
+  // Get values from form
+  const maxInvites = parseInt(maxInvitesInput.value, 10);
+  const delayMs = parseInt(delayMsInput.value, 10);
+
+  // Validate inputs
+  if (isNaN(maxInvites) || maxInvites < 1) {
+    maxInvitesInput.value = DEFAULT_SETTINGS.maxInvites;
+    return;
+  }
+
+  if (isNaN(delayMs) || delayMs < 500) {
+    delayMsInput.value = DEFAULT_SETTINGS.delayMs;
+    return;
+  }
+
+  // Save settings
+  const newSettings = { maxInvites, delayMs };
+  chrome.runtime.sendMessage({ 
+    action: 'setSettings', 
+    settings: newSettings 
+  }, () => {
+    // Show toast notification
+    showToast();
+  });
+});
+
+// Show toast notification for 3 seconds
+function showToast() {
+  toast.classList.add('show');
+  setTimeout(() => {
+    toast.classList.remove('show');
+  }, 3000);
+}

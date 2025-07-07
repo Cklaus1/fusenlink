@@ -1,1 +1,586 @@
-(()=>{"use strict";async function e(){return new Promise(e=>{chrome.runtime.sendMessage({action:"getSettings"},t=>{e(t)})})}let t=null,n=null,o=null,r=null,i=null,l=!1;function c(e,t,n){if(!o)return;let r=`Processed: ${e}`;t>0&&(r+=` / ${t}`),void 0!==n&&(r+=` • ${n.toFixed(1)}s elapsed`),o.textContent=r}function a(e){n&&(n.textContent=e)}let s=!1,u=0,d=0,m=0,p=0,f=50;function b(){const e=[],t=Array.from(document.querySelectorAll("button")).filter(e=>"connect"===e.textContent.trim().toLowerCase()&&!e.closest('[aria-hidden="true"]'));e.push(...t);const n=Array.from(document.querySelectorAll("button")).filter(e=>{const t=e.textContent.trim().toLowerCase();return("more"===t||t.includes("more"))&&!e.closest('[aria-hidden="true"]')});return e.push(...n),e}async function y(){await x(500);const e=Array.from(document.querySelectorAll("button")).filter(e=>{const t=e.textContent.trim().toLowerCase();return("send"===t||"send now"===t)&&null!==e.offsetParent});if(e.length>0)return e[0].click(),!0;const t=document.querySelectorAll('button[aria-label="Dismiss"]'),n=document.querySelectorAll('button[aria-label="Close"]');return t.length>0?t[0].click():n.length>0&&n[0].click(),!1}function g(){return document.querySelectorAll(".reusable-search__result-container").length}async function h(){const e=g();let t=0;for(;t<10;){if(await x(200),g()>e)return!0;t++}return!1}function x(e){return new Promise(t=>setTimeout(t,e))}function C(){return(Date.now()-u)/1e3}function w(){const e=document.querySelectorAll('[role="menuitem"]');for(const t of e)if("connect"===t.textContent.trim().toLowerCase())return t;const t=Array.from(document.querySelectorAll(".artdeco-dropdown__content button, .artdeco-dropdown-item")).filter(e=>"connect"===e.textContent.trim().toLowerCase()&&null!==e.offsetParent);return t.length>0?t[0]:null}function v(){const e=document.querySelector('.artdeco-dropdown__content [aria-label="Close"]');e?e.click():(document.body.click(),document.dispatchEvent(new KeyboardEvent("keydown",{key:"Escape",bubbles:!0})))}async function k(){const e=document.querySelector('iframe[src*="challenge"]'),t=["security check","please verify","confirm you are not a robot","check your network","unusual amount of activity","too many requests","rate limit","try again later"],n=document.querySelectorAll("p, h1, h2, h3, div, span");let o=null;for(const e of n){const n=e.textContent.toLowerCase();if(t.some(e=>n.includes(e))){o=e;break}}if(e||o){a("Paused – resolve security challenge to continue"),c(d,p,C());let e=!1,n=0;const r=1e3,i=3e5/r;for(;!e&&!s&&n<i;){await x(r),n++;const i=document.querySelector('iframe[src*="challenge"]');let l=!1;o&&document.body.contains(o)&&(l=t.some(e=>o.textContent.toLowerCase().includes(e))),i||l||(e=!0),e||n%5!=0||a(`Waiting for security challenge to be resolved (${Math.floor(n/60)}m)`)}return e?(a("Security challenge resolved, resuming..."),await x(1e3),!0):(s||(a("Timed out waiting for security challenge resolution"),s=!0),!0)}return!1}document.addEventListener("DOMContentLoaded",async function(){if(window.location.href.includes("/search/results/"))try{const S=await e();f=S.maxInvites;const E=function(f){const S=document.createElement("button");return S.textContent=`Invite ≤ ${f}`,S.className="li-bulk-invite-button",Object.assign(S.style,{backgroundColor:"#0a66c2",color:"white",border:"none",borderRadius:"24px",padding:"8px 16px",fontWeight:"bold",fontSize:"14px",cursor:"pointer",transition:"background-color 0.2s"}),S.addEventListener("mouseover",()=>{S.style.backgroundColor="#084d93"}),S.addEventListener("mouseout",()=>{S.style.backgroundColor="#0a66c2"}),S.addEventListener("click",()=>{!async function(f){if(!document.getElementById("li-bulk-overlay")){var S;s=!1,d=0,m=0,p=0,u=Date.now(),function(){t&&removeOverlay(),t=document.createElement("div"),t.id="li-bulk-overlay",t.setAttribute("role","status"),t.setAttribute("aria-live","polite"),Object.assign(t.style,{position:"fixed",bottom:"20px",right:"20px",backgroundColor:"white",borderRadius:"8px",boxShadow:"0 2px 10px rgba(0, 0, 0, 0.1)",padding:"16px",zIndex:"9999",fontFamily:'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',display:"flex",flexDirection:"column",minWidth:"250px",border:"1px solid #e0e0e0"});const e=document.createElement("div");Object.assign(e.style,{fontWeight:"bold",marginBottom:"8px",display:"flex",justifyContent:"space-between",alignItems:"center"});const c=document.createElement("span");c.textContent="Sending Connection Requests",Object.assign(c.style,{color:"#0a66c2"}),e.appendChild(c),o=document.createElement("div"),o.textContent="Initializing...",Object.assign(o.style,{margin:"8px 0",fontSize:"14px"}),n=document.createElement("div"),n.textContent="Starting...",Object.assign(n.style,{fontSize:"12px",color:"#666",marginBottom:"12px"}),r=document.createElement("button"),r.textContent="Stop",r.setAttribute("aria-label","Stop current action"),Object.assign(r.style,{backgroundColor:"#d11124",color:"white",border:"none",borderRadius:"4px",padding:"6px 12px",cursor:"pointer",fontSize:"14px",fontWeight:"bold",alignSelf:"flex-end"}),r.addEventListener("click",()=>{"function"==typeof i&&(i(),a("Stopping..."),r.disabled=!0,r.textContent="Stopping...",Object.assign(r.style,{backgroundColor:"#999",cursor:"default"}))}),t.appendChild(e),t.appendChild(o),t.appendChild(n),t.appendChild(r),document.body.appendChild(t),l=!0}(),a("Starting..."),i=()=>{s=!0,a("Stopping at next opportunity...")};try{const i=(await e()).delayMs;for(;!s&&d<f&&(!await k()||!s);){const e=b();if(0===p&&(p=Math.min(g(),f),c(d,p,C())),0!==e.length)for(let t=0;t<e.length&&!(s||d>=f);t++){const n=e[t];try{if(n._hasDropdownInfo){n.click(),await x(300);const e=w();e?(e.click(),await x(300),await y()?(d++,c(d,p,C()),a(`Sent invitation ${d} of ${f}`)):(m++,a(`Skipped invitation (${m} total skipped)`))):(v(),m++,a(`No Connect option in dropdown (${m} total skipped)`))}else n.click(),await x(300),await y()?(d++,c(d,p,C()),a(`Sent invitation ${d} of ${f}`)):(m++,a(`Skipped invitation (${m} total skipped)`));if(d%5==0&&await k()&&s)break;await x(i)}catch(e){console.error("Error sending invitation:",e),m++,a(`Error: ${e.message}`)}}else if(window.scrollTo(0,document.body.scrollHeight),a("Loading more results..."),!await h()){a("No more profiles with Connect button found");break}}let u="";u=s?`Cancelled – ${d} invitations sent`:d>=f?`Completed – ${d} invitations sent`:`No more profiles – ${d} invitations sent`,m>0&&(u+=` (${m} skipped)`),S=u,t&&(o&&(o.textContent=S),n&&(n.textContent="Completed"),r&&(r.disabled=!0,r.textContent="Done",Object.assign(r.style,{backgroundColor:"#0a66c2",cursor:"default"}),setTimeout(()=>{t&&t.parentNode&&(t.parentNode.removeChild(t),t=null,n=null,o=null,r=null,l=!1)},5e3)))}catch(e){console.error("Bulk invite error:",e),a(`Error: ${e.message}`)}}}(f)}),S}(f);await async function(e,t=5e3){return new Promise(n=>{const o=document.querySelector(e);if(o)return void n(o);const r=new MutationObserver((t,o)=>{const r=document.querySelector(e);r&&(o.disconnect(),n(r))});r.observe(document.body,{childList:!0,subtree:!0}),setTimeout(()=>{r.disconnect(),n(null)},t)})}(".search-reusables__filters-bar");const q=document.querySelector(".search-reusables__filters-bar")||document.querySelector(".search-results-container");if(q){const e=document.createElement("div");e.className="li-bulk-invite-container",Object.assign(e.style,{display:"inline-flex",alignItems:"center",marginLeft:"12px"}),e.appendChild(E),q.appendChild(e)}}catch(e){console.error("Error initializing Invite button:",e)}})})();
+/**
+ * LinkedIn Bulk Actions - Search Content Script
+ * Handles bulk connection requests on search results pages
+ */
+
+// Import utilities
+
+import { 
+  showOverlay, 
+  updateProgress, 
+  updateStatus, 
+  showSummary, 
+  hideOverlay, 
+  onStop 
+} from './lib/overlay.js';
+
+// Global state
+let stopRequested = false;
+let startTime = 0;
+let processedCount = 0;
+let skippedCount = 0;
+let totalCount = 0;
+let maxInvites = 50; // Default, will be updated from settings
+
+// Initialize when DOM is ready
+document.addEventListener('DOMContentLoaded', initializeButton);
+
+/**
+ * Initialize the UI by injecting the Invite button
+ */
+async function initializeButton() {
+  // Only run on search results pages
+  if (!window.location.href.includes('/search/results/')) {
+    return;
+  }
+
+  try {
+    // Get settings
+    const settings = await getSettings();
+    maxInvites = settings.maxInvites;
+    
+    // Create the button
+    const inviteButton = createInviteButton(maxInvites);
+    
+    // Find the filter bar to inject next to
+    // Wait for the filter bar to be ready
+    await waitForElement('.search-reusables__filters-bar');
+    
+    // Find the filter bar or a suitable container
+    const filterBar = document.querySelector('.search-reusables__filters-bar') || 
+                      document.querySelector('.search-results-container');
+    
+    // If filter bar exists, add the button
+    if (filterBar) {
+      // Create a container to hold our button with proper styling
+      const buttonContainer = document.createElement('div');
+      buttonContainer.className = 'li-bulk-invite-container';
+      Object.assign(buttonContainer.style, {
+        display: 'inline-flex',
+        alignItems: 'center',
+        marginLeft: '12px'
+      });
+      
+      // Add button to container
+      buttonContainer.appendChild(inviteButton);
+      
+      // Add container to filter bar
+      filterBar.appendChild(buttonContainer);
+    }
+  } catch (err) {
+    console.error('Error initializing Invite button:', err);
+  }
+}
+
+/**
+ * Create the Invite button with current max invites
+ * @param {number} max - Maximum number of invites to send
+ * @returns {HTMLButtonElement} The created button
+ */
+function createInviteButton(max) {
+  const button = document.createElement('button');
+  button.textContent = `Invite ≤ ${max}`;
+  button.className = 'li-bulk-invite-button';
+  
+  // Apply LinkedIn-like styling
+  Object.assign(button.style, {
+    backgroundColor: '#0a66c2',
+    color: 'white',
+    border: 'none',
+    borderRadius: '24px',
+    padding: '8px 16px',
+    fontWeight: 'bold',
+    fontSize: '14px',
+    cursor: 'pointer',
+    transition: 'background-color 0.2s'
+  });
+  
+  // Hover effect
+  button.addEventListener('mouseover', () => {
+    button.style.backgroundColor = '#084d93';
+  });
+  
+  button.addEventListener('mouseout', () => {
+    button.style.backgroundColor = '#0a66c2';
+  });
+  
+  // Add click handler
+  button.addEventListener('click', () => {
+    inviteProfiles(max);
+  });
+  
+  return button;
+}
+
+/**
+ * Start the bulk invite process
+ * @param {number} max - Maximum number of invites to send
+ */
+async function inviteProfiles(max) {
+  // Don't start multiple processes
+  if (document.getElementById('li-bulk-overlay')) {
+    return;
+  }
+  
+  // Initialize state
+  stopRequested = false;
+  processedCount = 0;
+  skippedCount = 0;
+  totalCount = 0;
+  startTime = Date.now();
+  
+  // Show overlay UI
+  showOverlay('Sending Connection Requests');
+  updateStatus('Starting...');
+  
+  // Register stop handler
+  onStop(() => {
+    stopRequested = true;
+    updateStatus('Stopping at next opportunity...');
+  });
+  
+  try {
+    // Get settings for delays
+    const settings = await getSettings();
+    const delayMs = settings.delayMs;
+    
+    // Continue processing until we reach max invites or run out of profiles
+    while (!stopRequested && processedCount < max) {
+      // Check for security challenges or rate limits before proceeding
+      const securityPaused = await checkForSecurityChallenge();
+      if (securityPaused && stopRequested) {
+        break; // User requested stop during security pause
+      }
+      
+      // Find connect buttons on the page
+      const connectButtons = findConnectButtons();
+      
+      // Update total count (best estimate)
+      if (totalCount === 0) {
+        totalCount = Math.min(countSearchResults(), max);
+        updateProgress(processedCount, totalCount, getElapsedSeconds());
+      }
+      
+      // If no connect buttons found, try scrolling to load more
+      if (connectButtons.length === 0) {
+        // Scroll to load more results
+        window.scrollTo(0, document.body.scrollHeight);
+        updateStatus('Loading more results...');
+        
+        // Wait for new content to load
+        const foundMoreResults = await waitForNewResults();
+        
+        // If no new results loaded, we're done
+        if (!foundMoreResults) {
+          updateStatus('No more profiles with Connect button found');
+          break;
+        }
+        
+        // Continue to next iteration to find buttons in newly loaded content
+        continue;
+      }
+      
+      // Process each button until we reach max
+      for (let i = 0; i < connectButtons.length; i++) {
+        if (stopRequested || processedCount >= max) {
+          break;
+        }
+        
+        const button = connectButtons[i];
+
+        try {
+          // Check if this is a "More" dropdown button
+          if (button._hasDropdownInfo) {
+            // Click the "More" button to open the dropdown
+            button.click();
+            await delay(300); // Wait for dropdown to appear
+
+            // Look for "Connect" in the expanded dropdown menu
+            const connectOption = findConnectOptionInDropdown();
+
+            if (connectOption) {
+              // Click the Connect option in the dropdown
+              connectOption.click();
+              await delay(300); // Wait for modal to appear
+
+              // Handle the confirmation modal
+              const sent = await handleSendInviteModal();
+
+              if (sent) {
+                processedCount++;
+                updateProgress(processedCount, totalCount, getElapsedSeconds());
+                updateStatus(`Sent invitation ${processedCount} of ${max}`);
+              } else {
+                skippedCount++;
+                updateStatus(`Skipped invitation (${skippedCount} total skipped)`);
+              }
+            } else {
+              // No Connect option found, close the dropdown and skip
+              closeOpenDropdown();
+              skippedCount++;
+              updateStatus(`No Connect option in dropdown (${skippedCount} total skipped)`);
+            }
+          } else {
+            // Regular Connect button
+            button.click();
+            await delay(300); // Wait for modal to appear
+
+            // Handle the confirmation modal if it appears
+            const sent = await handleSendInviteModal();
+
+            if (sent) {
+              processedCount++;
+              updateProgress(processedCount, totalCount, getElapsedSeconds());
+              updateStatus(`Sent invitation ${processedCount} of ${max}`);
+            } else {
+              skippedCount++;
+              updateStatus(`Skipped invitation (${skippedCount} total skipped)`);
+            }
+          }
+
+          // Check for security challenges periodically
+          if (processedCount % 5 === 0) {
+            const securityPaused = await checkForSecurityChallenge();
+            if (securityPaused && stopRequested) {
+              break; // User requested stop during security pause
+            }
+          }
+          
+          // Wait between actions to avoid rate limiting
+          await delay(delayMs);
+        } catch (err) {
+          console.error('Error sending invitation:', err);
+          skippedCount++;
+          updateStatus(`Error: ${err.message}`);
+        }
+      }
+    }
+    
+    // Show summary
+    let summaryText = '';
+    
+    if (stopRequested) {
+      summaryText = `Cancelled – ${processedCount} invitations sent`;
+    } else if (processedCount >= max) {
+      summaryText = `Completed – ${processedCount} invitations sent`;
+    } else {
+      summaryText = `No more profiles – ${processedCount} invitations sent`;
+    }
+    
+    if (skippedCount > 0) {
+      summaryText += ` (${skippedCount} skipped)`;
+    }
+    
+    showSummary(summaryText);
+  } catch (err) {
+    console.error('Bulk invite error:', err);
+    updateStatus(`Error: ${err.message}`);
+  }
+}
+
+/**
+ * Find all Connect buttons in the current view
+ * @returns {HTMLElement[]} Array of connect buttons
+ */
+function findConnectButtons() {
+  const buttons = [];
+
+  // Try different selectors for Connect buttons
+
+  // 1. Direct connect buttons (most common)
+  const directButtons = Array.from(document.querySelectorAll('button'))
+    .filter(button => {
+      const text = button.textContent.trim().toLowerCase();
+      return text === 'connect' && !button.closest('[aria-hidden="true"]');
+    });
+
+  buttons.push(...directButtons);
+
+  // 2. Find and expand "More" dropdown buttons to reveal hidden Connect options
+  const moreButtons = findMoreDropdownButtons();
+  for (const moreButton of moreButtons) {
+    // Store information about this dropdown for later cleanup
+    const dropdownInfo = {
+      button: moreButton,
+      wasProcessed: false
+    };
+
+    // Add a special property to the button so we can identify it
+    moreButton._hasDropdownInfo = true;
+
+    // Add to our list of buttons with the dropdown info attached
+    buttons.push(moreButton);
+  }
+
+  return buttons;
+}
+
+/**
+ * Find "More" dropdown buttons that might contain Connect options
+ * @returns {HTMLElement[]} Array of More buttons
+ */
+function findMoreDropdownButtons() {
+  // Find buttons with "More" text
+  return Array.from(document.querySelectorAll('button'))
+    .filter(button => {
+      const text = button.textContent.trim().toLowerCase();
+      return (text === 'more' || text.includes('more')) &&
+             !button.closest('[aria-hidden="true"]') &&
+             !button._hasDropdownInfo; // Skip if already processed
+    });
+}
+
+/**
+ * Handle the Send Invitation modal that appears after clicking Connect
+ * @returns {Promise<boolean>} True if invitation was sent successfully
+ */
+async function handleSendInviteModal() {
+  // Wait briefly for modal to appear
+  await delay(500);
+  
+  // Look for the Send/Send Now button in the modal
+  const sendButtons = Array.from(document.querySelectorAll('button'))
+    .filter(button => {
+      const text = button.textContent.trim().toLowerCase();
+      return (text === 'send' || text === 'send now') && 
+             button.offsetParent !== null; // Visible button
+    });
+  
+  if (sendButtons.length > 0) {
+    // Click the send button
+    sendButtons[0].click();
+    return true;
+  }
+  
+  // If no modal appeared or no send button found, try dismissing any visible modal
+  const dismissButtons = document.querySelectorAll('button[aria-label="Dismiss"]');
+  const closeButtons = document.querySelectorAll('button[aria-label="Close"]');
+  
+  if (dismissButtons.length > 0) {
+    dismissButtons[0].click();
+  } else if (closeButtons.length > 0) {
+    closeButtons[0].click();
+  }
+  
+  return false;
+}
+
+/**
+ * Count the number of search results on the page
+ * @returns {number} The number of results found
+ */
+function countSearchResults() {
+  // Look for profile cards in search results
+  const resultCards = document.querySelectorAll('.reusable-search__result-container');
+  return resultCards.length;
+}
+
+/**
+ * Wait to see if new search results load after scrolling
+ * @returns {Promise<boolean>} True if new results appeared
+ */
+async function waitForNewResults() {
+  const countBefore = countSearchResults();
+  
+  // Wait for content to potentially load
+  let attempts = 0;
+  const maxAttempts = 10; // Try for up to 10 * 200ms = 2s
+  
+  while (attempts < maxAttempts) {
+    await delay(200);
+    const currentCount = countSearchResults();
+    
+    if (currentCount > countBefore) {
+      return true; // New results loaded
+    }
+    
+    attempts++;
+  }
+  
+  return false; // No new results found after waiting
+}
+
+/**
+ * Wait for an element to be present in the DOM
+ * @param {string} selector - CSS selector to wait for
+ * @param {number} [maxWaitMs=5000] - Maximum wait time in milliseconds
+ * @returns {Promise<HTMLElement|null>} The found element or null if not found
+ */
+async function waitForElement(selector, maxWaitMs = 5000) {
+  return new Promise(resolve => {
+    // Check if element already exists
+    const element = document.querySelector(selector);
+    if (element) {
+      resolve(element);
+      return;
+    }
+    
+    // Set up observer to watch for the element
+    const observer = new MutationObserver((mutations, obs) => {
+      const element = document.querySelector(selector);
+      if (element) {
+        obs.disconnect();
+        resolve(element);
+      }
+    });
+    
+    // Start observing
+    observer.observe(document.body, {
+      childList: true,
+      subtree: true
+    });
+    
+    // Set timeout to stop observing if element never appears
+    setTimeout(() => {
+      observer.disconnect();
+      resolve(null);
+    }, maxWaitMs);
+  });
+}
+
+/**
+ * Create a promise that resolves after a delay
+ * @param {number} ms - Milliseconds to delay
+ * @returns {Promise<void>} Promise that resolves after the delay
+ */
+function delay(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+/**
+ * Get the elapsed seconds since the operation started
+ * @returns {number} Elapsed seconds
+ */
+function getElapsedSeconds() {
+  return (Date.now() - startTime) / 1000;
+}
+
+/**
+ * Find the Connect option in an open dropdown menu
+ * @returns {HTMLElement|null} The Connect option element or null if not found
+ */
+function findConnectOptionInDropdown() {
+  // First try to find it through menu items
+  const menuItems = document.querySelectorAll('[role="menuitem"]');
+
+  for (const item of menuItems) {
+    const text = item.textContent.trim().toLowerCase();
+    if (text === 'connect') {
+      return item;
+    }
+  }
+
+  // Fall back to more generic search
+  const dropdownButtons = Array.from(document.querySelectorAll('.artdeco-dropdown__content button, .artdeco-dropdown-item'))
+    .filter(button => {
+      const text = button.textContent.trim().toLowerCase();
+      return text === 'connect' && button.offsetParent !== null; // Visible button
+    });
+
+  return dropdownButtons.length > 0 ? dropdownButtons[0] : null;
+}
+
+/**
+ * Close any open dropdown menu
+ */
+function closeOpenDropdown() {
+  // Try to find the close button for the dropdown
+  const closeButton = document.querySelector('.artdeco-dropdown__content [aria-label="Close"]');
+  if (closeButton) {
+    closeButton.click();
+    return;
+  }
+
+  // If no close button, try clicking outside the dropdown
+  document.body.click();
+
+  // As a last resort, try hitting Escape key
+  document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+}
+
+/**
+ * Check for security challenges or rate limiting
+ * @returns {Promise<boolean>} True if a security challenge was detected and handled
+ */
+async function checkForSecurityChallenge() {
+  // Check for CAPTCHA challenge iframe
+  const captchaFrame = document.querySelector('iframe[src*="challenge"]');
+  
+  // Check for rate limit or security messages
+  const securityMessages = [
+    'security check',
+    'please verify',
+    'confirm you're not a robot',
+    'check your network',
+    'unusual amount of activity',
+    'too many requests',
+    'rate limit',
+    'try again later'
+  ];
+  
+  // Find text nodes containing security messages
+  const textElements = document.querySelectorAll('p, h1, h2, h3, div, span');
+  let securityMessageElement = null;
+  
+  for (const element of textElements) {
+    const text = element.textContent.toLowerCase();
+    if (securityMessages.some(msg => text.includes(msg))) {
+      securityMessageElement = element;
+      break;
+    }
+  }
+  
+  // If challenge detected, pause and wait for user to resolve
+  if (captchaFrame || securityMessageElement) {
+    updateStatus('Paused – resolve security challenge to continue');
+    updateProgress(processedCount, totalCount, getElapsedSeconds());
+    
+    // Wait until the challenge is gone
+    let challengeResolved = false;
+    let checkAttempts = 0;
+    const maxWaitTime = 5 * 60 * 1000; // 5 minutes max wait
+    const checkInterval = 1000; // Check every second
+    const maxAttempts = maxWaitTime / checkInterval;
+    
+    while (!challengeResolved && !stopRequested && checkAttempts < maxAttempts) {
+      await delay(checkInterval);
+      checkAttempts++;
+      
+      // Re-check for the challenge elements
+      const stillHasCaptcha = document.querySelector('iframe[src*="challenge"]');
+      
+      let stillHasMessage = false;
+      if (securityMessageElement && document.body.contains(securityMessageElement)) {
+        stillHasMessage = securityMessages.some(msg => 
+          securityMessageElement.textContent.toLowerCase().includes(msg)
+        );
+      }
+      
+      // Check if challenge is resolved
+      if (!stillHasCaptcha && !stillHasMessage) {
+        challengeResolved = true;
+      }
+      
+      // Update status with waiting time
+      if (!challengeResolved && checkAttempts % 5 === 0) {
+        const waitTime = Math.floor(checkAttempts / 60);
+        updateStatus(`Waiting for security challenge to be resolved (${waitTime}m)`);
+      }
+    }
+    
+    // Resume if resolved, otherwise end if timed out or stopped
+    if (challengeResolved) {
+      updateStatus('Security challenge resolved, resuming...');
+      await delay(1000); // Brief pause before resuming
+      return true;
+    } else if (stopRequested) {
+      return true;
+    } else {
+      updateStatus('Timed out waiting for security challenge resolution');
+      stopRequested = true;
+      return true;
+    }
+  }
+  
+  return false;
+}

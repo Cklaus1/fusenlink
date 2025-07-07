@@ -432,18 +432,35 @@ async function processInvites(actionLabel, buttonText) {
         }
       }
 
-      // If no buttons found, check if we need to scroll to load more
+      // After processing all visible buttons, check if we need to scroll to load more
       if (actionButtons.length === 0) {
-        // Scroll to bottom to load more invitations
+        // No buttons found at all, try scrolling to load more invitations
         window.scrollTo(0, document.body.scrollHeight);
-
-        // Wait for new content to load
         updateStatus('Loading more invitations...');
+        
         const foundMoreInvitations = await waitForNewInvitations();
-
-        // If no new invitations loaded after scrolling, we're done
         if (!foundMoreInvitations) {
+          // No new invitations loaded, we're done
           break;
+        }
+      } else {
+        // We processed some buttons, but there might be more invitations below
+        // Scroll down to load additional invitations
+        window.scrollTo(0, document.body.scrollHeight);
+        updateStatus('Loading more invitations...');
+        
+        // Wait a bit to see if new invitations load
+        await delay(1000);
+        
+        // Check if new invitations appeared after scrolling
+        const newActionButtons = findActionButtons(buttonText);
+        if (newActionButtons.length === 0) {
+          // Try waiting a bit more for lazy loading
+          const foundMoreInvitations = await waitForNewInvitations();
+          if (!foundMoreInvitations) {
+            // No more invitations found, we're done
+            break;
+          }
         }
       }
     }
@@ -489,32 +506,78 @@ function findActionButtons(buttonText) {
     }
   }
   
-  // Fallback method: Use aria-label patterns
-  const labelPatterns = {
-    'Accept': ['aria-label*="Accept"', 'aria-label*="invitation"'],
-    'Ignore': ['aria-label*="Ignore"', 'aria-label*="invitation"']
-  };
+  // Try multiple selector strategies
+  const selectors = [
+    // Direct aria-label matching
+    `button[aria-label*="${buttonText}"]`,
+    // Button text matching
+    `button:contains("${buttonText}")`,
+    // Generic invitation action buttons
+    'button[data-control-name*="invitation"]',
+    'button[data-control-name*="accept"]',
+    'button[data-control-name*="ignore"]'
+  ];
   
-  if (labelPatterns[buttonText]) {
-    // Try aria-label patterns
-    const ariaButtons = Array.from(document.querySelectorAll('button'))
-      .filter(button => {
-        const ariaLabel = button.getAttribute('aria-label') || '';
-        const lowerLabel = ariaLabel.toLowerCase();
-        return lowerLabel.includes(buttonText.toLowerCase()) && 
-               lowerLabel.includes('invitation');
-      });
-    
-    if (ariaButtons.length > 0) {
-      return ariaButtons;
+  for (const selector of selectors) {
+    try {
+      let candidateButtons = Array.from(document.querySelectorAll(selector.replace(':contains', '')));
+      
+      if (selector.includes(':contains')) {
+        // Manual text matching since :contains isn't standard CSS
+        candidateButtons = candidateButtons.filter(button => 
+          button.textContent.trim().toLowerCase().includes(buttonText.toLowerCase())
+        );
+      }
+      
+      if (candidateButtons.length > 0) {
+        buttons = candidateButtons;
+        break;
+      }
+    } catch (e) {
+      continue;
     }
   }
   
-  // Final fallback: Text content search
-  const allButtons = Array.from(document.querySelectorAll('button'));
-  buttons = allButtons.filter(button => {
-    const text = button.textContent.trim();
-    return text === buttonText;
+  // Fallback method: Use aria-label patterns
+  if (buttons.length === 0) {
+    const labelPatterns = {
+      'Accept': ['accept', 'invitation'],
+      'Ignore': ['ignore', 'invitation']
+    };
+    
+    if (labelPatterns[buttonText]) {
+      const ariaButtons = Array.from(document.querySelectorAll('button'))
+        .filter(button => {
+          const ariaLabel = (button.getAttribute('aria-label') || '').toLowerCase();
+          const textContent = button.textContent.trim().toLowerCase();
+          
+          return (ariaLabel.includes(buttonText.toLowerCase()) || 
+                  textContent === buttonText.toLowerCase()) &&
+                 (ariaLabel.includes('invitation') || textContent.includes('invitation') || 
+                  button.closest('[data-view-name*="invitation"]'));
+        });
+      
+      if (ariaButtons.length > 0) {
+        buttons = ariaButtons;
+      }
+    }
+  }
+  
+  // Final fallback: Text content search with loose matching
+  if (buttons.length === 0) {
+    const allButtons = Array.from(document.querySelectorAll('button'));
+    buttons = allButtons.filter(button => {
+      const text = button.textContent.trim().toLowerCase();
+      return text === buttonText.toLowerCase() || 
+             (text.includes(buttonText.toLowerCase()) && text.includes('invitation'));
+    });
+  }
+  
+  // Filter out any buttons that are not visible or are disabled
+  buttons = buttons.filter(button => {
+    return button.offsetParent !== null && // Visible
+           !button.disabled && // Not disabled
+           !button.closest('[aria-hidden="true"]'); // Not in hidden container
   });
   
   return buttons;
@@ -525,17 +588,38 @@ function findActionButtons(buttonText) {
  * @returns {number} The number of invitation cards found
  */
 function countInvitationCards() {
-  // Use the correct LinkedIn selector for invitation containers
-  let cards = document.querySelectorAll('[data-view-name="pending-invitation"]');
+  // Try multiple selectors to find invitation cards
+  const selectors = [
+    '[data-view-name="pending-invitation"]',
+    '[data-view-name*="invitation"]',
+    '[role="listitem"][componentkey*="invitation"]',
+    '.invitation-card',
+    '.invitation-card__container',
+    '[class*="invitation-card"]',
+    '[data-test-id*="invitation"]',
+    // Also check for containers that have Accept/Ignore buttons
+    'li:has(button[aria-label*="Accept"]), li:has(button[aria-label*="Ignore"])',
+    'div:has(button[data-view-name="invitation-action"])'
+  ];
   
-  // Fallback to role-based selector
-  if (cards.length === 0) {
-    cards = document.querySelectorAll('[role="listitem"][componentkey*="invitation"]');
+  let cards = null;
+  
+  for (const selector of selectors) {
+    try {
+      cards = document.querySelectorAll(selector);
+      if (cards.length > 0) {
+        break;
+      }
+    } catch (e) {
+      // Skip invalid selectors (like :has() in older browsers)
+      continue;
+    }
   }
   
-  // Another fallback to common invitation container patterns
-  if (cards.length === 0) {
-    cards = document.querySelectorAll('.invitation-card, .invitation-card__container, [class*="invitation"]');
+  // If still no cards found, try counting invitation action buttons as a proxy
+  if (!cards || cards.length === 0) {
+    const actionButtons = document.querySelectorAll('button[data-view-name="invitation-action"]');
+    return Math.ceil(actionButtons.length / 2); // Divide by 2 since each invitation has Accept and Ignore
   }
   
   return cards.length;
