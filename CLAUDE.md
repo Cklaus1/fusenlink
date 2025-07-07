@@ -41,6 +41,15 @@ npm install
 # 3. Click "Load unpacked" and select this directory
 ```
 
+### Git Configuration
+```bash
+# Use SSH for git operations (recommended)
+git remote set-url origin git@github.com:Cklaus1/fusenlink.git
+
+# Verify SSH is configured
+git remote -v
+```
+
 ## Architecture Overview
 
 ### Core Components
