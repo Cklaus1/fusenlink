@@ -631,11 +631,11 @@ function countInvitationCards() {
 async function dismissConfirmationModal() {
   // Wait briefly for modal to appear
   await delay(200);
-  
-  // Look for dismiss buttons in modals
-  const dismissButtons = document.querySelectorAll('button[aria-label="Dismiss"]');
-  const closeButtons = document.querySelectorAll('button[aria-label="Close"]');
-  
+
+  // Look for dismiss buttons in modals (including shadow DOM)
+  const dismissButtons = querySelectorAllDeep('button[aria-label="Dismiss"]');
+  const closeButtons = querySelectorAllDeep('button[aria-label="Close"]');
+
   // Try to click dismiss if found
   if (dismissButtons.length > 0) {
     dismissButtons[0].click();
@@ -941,8 +941,15 @@ async function sendConnectRequests(max) {
           const nextPageClicked = await goToNextPage();
           
           if (nextPageClicked) {
-            updateStatus('Moved to next page, continuing...');
-            await delay(2000); // Wait for page to load
+            updateStatus('Moved to next page, waiting for results...');
+            // Wait for LinkedIn SPA to load new results
+            await delay(3000);
+            // Wait until connect buttons or result cards appear
+            let loadAttempts = 0;
+            while (loadAttempts < 10 && findConnectButtons().length === 0) {
+              await delay(1000);
+              loadAttempts++;
+            }
             continue;
           } else {
             updateStatus('No more pages available');
@@ -1000,9 +1007,9 @@ async function sendConnectRequests(max) {
               document.body.click();
             }
           } else {
-            // Regular Connect button
+            // Regular Connect button or link
             button.click();
-            await delay(300); // Wait for modal to appear
+            await delay(1000); // Wait for modal to appear (LinkedIn SPA may need time)
 
             // Handle the confirmation modal if it appears
             const sent = await handleSendInviteModal();
@@ -1064,28 +1071,40 @@ async function sendConnectRequests(max) {
 function findConnectButtons() {
   const buttons = [];
 
-  // Try different selectors for Connect buttons
-  
-  // 1. Direct connect buttons (most common)
-  const directButtons = Array.from(document.querySelectorAll('button'))
-    .filter(button => {
-      const text = button.textContent.trim().toLowerCase();
-      return text === 'connect' && !button.closest('[aria-hidden="true"]');
+  // Try different selectors for Connect buttons and links
+  // LinkedIn uses both <button> and <a> elements for Connect actions
+
+  // 1. Direct connect buttons or links (most common)
+  const directButtons = Array.from(document.querySelectorAll('button, a'))
+    .filter(el => {
+      const text = el.textContent.trim().toLowerCase();
+      return text === 'connect' && !el.closest('[aria-hidden="true"]') &&
+             el.offsetParent !== null && !el.disabled;
     });
 
   buttons.push(...directButtons);
-  
-  // 2. Find "More" dropdown buttons that might contain Connect options
-  const moreButtons = Array.from(document.querySelectorAll('button'))
-    .filter(button => {
-      const text = button.textContent.trim().toLowerCase();
-      return (text === 'more' || text.includes('more')) &&
-             !button.closest('[aria-hidden="true"]');
-    });
-  
-  buttons.push(...moreButtons);
 
-  return buttons;
+  // 2. Links with aria-label containing "Invite" and "connect"
+  if (buttons.length === 0) {
+    const inviteLinks = Array.from(document.querySelectorAll('a[aria-label*="nvite"][aria-label*="onnect"]'))
+      .filter(el => el.offsetParent !== null);
+    buttons.push(...inviteLinks);
+  }
+
+  // 3. Find "More" dropdown buttons that might contain Connect options
+  if (buttons.length === 0) {
+    const moreButtons = Array.from(document.querySelectorAll('button'))
+      .filter(button => {
+        const text = button.textContent.trim().toLowerCase();
+        return (text === 'more' || text.includes('more')) &&
+               !button.closest('[aria-hidden="true"]');
+      });
+
+    buttons.push(...moreButtons);
+  }
+
+  // Filter out our own extension buttons
+  return buttons.filter(el => !el.classList.contains('li-bulk-connect-button'));
 }
 
 /**
@@ -1114,75 +1133,93 @@ function findConnectOptionInDropdown() {
 }
 
 /**
+ * Query elements across both the main document and shadow DOMs
+ * LinkedIn renders modals inside shadow DOM containers
+ * @param {string} selector - CSS selector to search for
+ * @returns {HTMLElement[]} Array of matching elements
+ */
+function querySelectorAllDeep(selector) {
+  const results = Array.from(document.querySelectorAll(selector));
+
+  // Also search inside shadow roots
+  const shadowHosts = document.querySelectorAll('*');
+  for (const host of shadowHosts) {
+    if (host.shadowRoot) {
+      results.push(...Array.from(host.shadowRoot.querySelectorAll(selector)));
+    }
+  }
+
+  // Check known LinkedIn shadow DOM containers
+  const modalOutlet = document.getElementById('artdeco-modal-outlet');
+  if (modalOutlet && modalOutlet.shadowRoot) {
+    results.push(...Array.from(modalOutlet.shadowRoot.querySelectorAll(selector)));
+  }
+
+  return results;
+}
+
+/**
+ * Find a button by text content, searching both regular DOM and shadow DOM
+ * @param {string} text - Button text to search for (case-insensitive)
+ * @param {boolean} exact - Whether to match exactly or use includes
+ * @returns {HTMLElement|null} The matching button or null
+ */
+function findButtonDeep(text, exact = true) {
+  const allButtons = querySelectorAllDeep('button, a[role="button"]');
+  const lowerText = text.toLowerCase();
+
+  return allButtons.find(button => {
+    const btnText = button.textContent.trim().toLowerCase();
+    return exact ? btnText === lowerText : btnText.includes(lowerText);
+  }) || null;
+}
+
+/**
  * Handle the Send Invitation modal that appears after clicking Connect
+ * LinkedIn renders modals inside shadow DOM, so we need deep queries
  * @returns {Promise<boolean>} True if invitation was sent successfully
  */
 async function handleSendInviteModal() {
-  // Wait briefly for modal to appear
-  await delay(500);
+  // Wait for modal to appear (LinkedIn uses shadow DOM for modals)
+  await delay(1000);
 
-  // First, check if there's an "Add a note" or similar modal with an option to skip
-  // Look for "Send without a note" button specifically
-  const exactButton = Array.from(document.querySelectorAll('button'))
-    .find(button => {
-      const text = button.textContent.trim().toLowerCase();
-      return text === 'send without a note' && button.offsetParent !== null;
-    });
+  // Look for "Send without a note" button in both regular and shadow DOM
+  const skipNoteButton = findButtonDeep('send without a note');
 
-  // If we found the exact button, use it, otherwise try more general patterns
-  const skipNoteButtons = exactButton ? [exactButton] : Array.from(document.querySelectorAll('button'))
-    .filter(button => {
-      const text = button.textContent.trim().toLowerCase();
-      return ((text.includes('without') && text.includes('note')) ||
-              text.includes('skip') ||
-              (text.includes('connect') && !text.includes('add'))) &&
-             button.offsetParent !== null; // Visible button
-    });
-
-  if (skipNoteButtons.length > 0) {
-    // Click the button to skip adding a note
-    skipNoteButtons[0].click();
-    await delay(300); // Wait for any subsequent modal
-  }
-
-  // Now look for the final Send/Send Now button in the modal
-  const sendButtons = Array.from(document.querySelectorAll('button'))
-    .filter(button => {
-      const text = button.textContent.trim().toLowerCase();
-      return (text === 'send' || text === 'send now' || text === 'connect') &&
-             button.offsetParent !== null; // Visible button
-    });
-
-  if (sendButtons.length > 0) {
-    // Click the send button
-    sendButtons[0].click();
+  if (skipNoteButton) {
+    skipNoteButton.click();
+    await delay(500);
     return true;
   }
 
-  // If we're here, we might need to look for an option to proceed without a note
-  // Look for any "Connect" or similar primary action
-  const connectButtons = Array.from(document.querySelectorAll('button'))
-    .filter(button => {
-      const text = button.textContent.trim().toLowerCase();
-      const isPrimary = button.classList.contains('artdeco-button--primary') ||
-                       button.style.backgroundColor === '#0a66c2' ||
-                       text.includes('connect');
-      return isPrimary && button.offsetParent !== null; // Visible primary button
-    });
-
-  if (connectButtons.length > 0) {
-    connectButtons[0].click();
+  // Try broader matching for skip note buttons
+  const altSkipButton = findButtonDeep('without', false) || findButtonDeep('skip', false);
+  if (altSkipButton) {
+    altSkipButton.click();
+    await delay(500);
     return true;
   }
 
-  // If no modal appeared or no send button found, try dismissing any visible modal
-  const dismissButtons = document.querySelectorAll('button[aria-label="Dismiss"]');
-  const closeButtons = document.querySelectorAll('button[aria-label="Close"]');
+  // Look for Send/Send Now button
+  const sendButton = findButtonDeep('send') || findButtonDeep('send now');
+  if (sendButton) {
+    sendButton.click();
+    return true;
+  }
 
-  if (dismissButtons.length > 0) {
-    dismissButtons[0].click();
-  } else if (closeButtons.length > 0) {
-    closeButtons[0].click();
+  // Look for primary Connect button in modal
+  const connectButton = findButtonDeep('connect');
+  if (connectButton && !connectButton.classList.contains('li-bulk-connect-button')) {
+    connectButton.click();
+    return true;
+  }
+
+  // Try dismissing any visible modal
+  const dismissButton = findButtonDeep('dismiss', false) ||
+                        querySelectorAllDeep('button[aria-label="Dismiss"]')[0] ||
+                        querySelectorAllDeep('button[aria-label="Close"]')[0];
+  if (dismissButton) {
+    dismissButton.click();
   }
 
   return false;
@@ -1193,9 +1230,29 @@ async function handleSendInviteModal() {
  * @returns {number} The number of results found
  */
 function countSearchResults() {
-  // Look for profile cards in search results
-  const resultCards = document.querySelectorAll('.reusable-search__result-container');
-  return resultCards.length;
+  // Look for profile cards in search results using multiple strategies
+  const selectors = [
+    '.reusable-search__result-container',
+    '[class*="search-result"]',
+    '[class*="entity-result"]'
+  ];
+
+  for (const selector of selectors) {
+    try {
+      const cards = document.querySelectorAll(selector);
+      if (cards.length > 0) return cards.length;
+    } catch (e) {
+      continue;
+    }
+  }
+
+  // Fallback: count connect buttons/links as a proxy for results
+  const connectElements = document.querySelectorAll('a[aria-label*="nvite"][aria-label*="onnect"], button');
+  const connectCount = Array.from(connectElements).filter(el =>
+    el.textContent.trim().toLowerCase() === 'connect' && el.offsetParent !== null
+  ).length;
+
+  return connectCount;
 }
 
 /**
