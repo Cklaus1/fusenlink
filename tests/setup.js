@@ -1,5 +1,5 @@
 // Setup file for Jest tests
-const chrome = require('jest-chrome');
+const { chrome } = require('jest-chrome');
 
 // Mock Chrome API
 global.chrome = chrome;

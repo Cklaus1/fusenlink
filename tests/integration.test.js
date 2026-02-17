@@ -1,4 +1,8 @@
 /**
+ * @jest-environment node
+ */
+
+/**
  * Integration tests using Puppeteer
  * These tests simulate the extension running in a Chrome browser
  */
