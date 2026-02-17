@@ -943,10 +943,13 @@ async function sendConnectRequests(max) {
           if (nextPageClicked) {
             updateStatus('Moved to next page, waiting for results...');
             // Wait for LinkedIn SPA to load new results
-            await delay(3000);
+            await delay(4000);
+            // Scroll to top of new page
+            window.scrollTo(0, 0);
+            await delay(1000);
             // Wait until connect buttons or result cards appear
             let loadAttempts = 0;
-            while (loadAttempts < 10 && findConnectButtons().length === 0) {
+            while (loadAttempts < 15 && findConnectButtons().length === 0) {
               await delay(1000);
               loadAttempts++;
             }
@@ -1285,27 +1288,28 @@ async function waitForNewResults() {
  * @returns {Promise<boolean>} True if next page button was found and clicked
  */
 async function goToNextPage() {
-  
+
+  // Scroll to bottom first to ensure pagination is visible
+  window.scrollTo(0, document.body.scrollHeight);
+  await delay(1000);
+
   // Try different selectors for the next page button
   const nextButtonSelectors = [
     'button[aria-label="Next"]',
-    'button[aria-label="Next page"]', 
+    'button[aria-label="Next page"]',
     'button[aria-label="Go to next page"]',
     '.artdeco-pagination__button--next',
     '.artdeco-pagination__button[aria-label*="Next"]',
-    'button:has(li-icon[type="chevron-right"])',
-    'button:has(svg[data-test-icon="chevron-right"])',
     'a[aria-label="Next"]',
     'a[aria-label="Next page"]'
   ];
-  
+
   let nextButton = null;
-  
+
   for (const selector of nextButtonSelectors) {
     try {
       const buttons = document.querySelectorAll(selector);
       for (const button of buttons) {
-        // Check if button is visible and not disabled
         if (button.offsetParent !== null && !button.disabled && !button.classList.contains('disabled')) {
           nextButton = button;
           break;
@@ -1313,32 +1317,57 @@ async function goToNextPage() {
       }
       if (nextButton) break;
     } catch (err) {
-      // Skip invalid selectors
       continue;
     }
   }
-  
+
   // If no specific next button found, try finding by text content
   if (!nextButton) {
     const allButtons = Array.from(document.querySelectorAll('button, a'));
     for (const button of allButtons) {
-      const text = button.textContent.trim().toLowerCase();
+      // Get direct text content (ignore SVG/icon child text)
+      let text = '';
+      for (const child of button.childNodes) {
+        if (child.nodeType === Node.TEXT_NODE) {
+          text += child.textContent;
+        } else if (child.tagName === 'SPAN') {
+          text += child.textContent;
+        }
+      }
+      text = text.trim().toLowerCase();
+
+      // Also check full textContent as fallback
+      const fullText = button.textContent.trim().toLowerCase();
       const ariaLabel = (button.getAttribute('aria-label') || '').toLowerCase();
-      
-      if ((text === 'next' || text.includes('next page') || 
-           ariaLabel.includes('next') || ariaLabel.includes('page')) &&
+
+      if ((text === 'next' || fullText === 'next' || text.includes('next page') ||
+           ariaLabel.includes('next')) &&
           button.offsetParent !== null && !button.disabled) {
         nextButton = button;
         break;
       }
     }
   }
-  
+
   if (nextButton) {
+    // Scroll the button into view and click
+    nextButton.scrollIntoView({ behavior: 'instant', block: 'center' });
+    await delay(300);
     nextButton.click();
     return true;
   }
-  
+
+  // URL-based fallback: increment the page parameter
+  try {
+    const url = new URL(window.location.href);
+    const currentPage = parseInt(url.searchParams.get('page') || '1', 10);
+    url.searchParams.set('page', currentPage + 1);
+    window.location.href = url.toString();
+    return true;
+  } catch (e) {
+    // URL parsing failed
+  }
+
   return false;
 }
 
