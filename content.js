@@ -943,14 +943,14 @@ async function sendConnectRequests(max) {
           if (nextPageClicked) {
             updateStatus('Moved to next page, waiting for results...');
             // Wait for LinkedIn SPA to load new results
-            await delay(4000);
+            await delay(2500);
             // Scroll to top of new page
             window.scrollTo(0, 0);
-            await delay(1000);
+            await delay(500);
             // Wait until connect buttons or result cards appear
             let loadAttempts = 0;
             while (loadAttempts < 15 && findConnectButtons().length === 0) {
-              await delay(1000);
+              await delay(500);
               loadAttempts++;
             }
             continue;
@@ -977,7 +977,7 @@ async function sendConnectRequests(max) {
           if (button.textContent.trim().toLowerCase().includes('more')) {
             // Click the "More" button to open the dropdown
             button.click();
-            await delay(300); // Wait for dropdown to appear
+            await delay(200); // Wait for dropdown to appear
 
             // Look for "Connect" in the expanded dropdown menu
             const connectOption = findConnectOptionInDropdown();
@@ -985,7 +985,7 @@ async function sendConnectRequests(max) {
             if (connectOption) {
               // Click the Connect option in the dropdown
               connectOption.click();
-              await delay(300); // Wait for modal to appear
+              await delay(200); // Wait for modal to appear
 
               // Handle the confirmation modal
               const sent = await handleSendInviteModal();
@@ -1012,7 +1012,7 @@ async function sendConnectRequests(max) {
           } else {
             // Regular Connect button or link
             button.click();
-            await delay(1000); // Wait for modal to appear (LinkedIn SPA may need time)
+            await delay(500); // Wait for modal to appear
 
             // Handle the confirmation modal if it appears
             const sent = await handleSendInviteModal();
@@ -1184,14 +1184,14 @@ function findButtonDeep(text, exact = true) {
  */
 async function handleSendInviteModal() {
   // Wait for modal to appear (LinkedIn uses shadow DOM for modals)
-  await delay(1000);
+  await delay(400);
 
   // Look for "Send without a note" button in both regular and shadow DOM
   const skipNoteButton = findButtonDeep('send without a note');
 
   if (skipNoteButton) {
     skipNoteButton.click();
-    await delay(500);
+    await delay(200);
     return true;
   }
 
@@ -1199,7 +1199,7 @@ async function handleSendInviteModal() {
   const altSkipButton = findButtonDeep('without', false) || findButtonDeep('skip', false);
   if (altSkipButton) {
     altSkipButton.click();
-    await delay(500);
+    await delay(200);
     return true;
   }
 
@@ -1291,7 +1291,7 @@ async function goToNextPage() {
 
   // Scroll to bottom first to ensure pagination is visible
   window.scrollTo(0, document.body.scrollHeight);
-  await delay(1000);
+  await delay(500);
 
   // Try different selectors for the next page button
   const nextButtonSelectors = [
@@ -1352,7 +1352,7 @@ async function goToNextPage() {
   if (nextButton) {
     // Scroll the button into view and click
     nextButton.scrollIntoView({ behavior: 'instant', block: 'center' });
-    await delay(300);
+    await delay(150);
     nextButton.click();
     return true;
   }
