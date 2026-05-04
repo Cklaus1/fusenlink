@@ -3,12 +3,14 @@
  * Each key maps to an ordered list of strategies tried in sequence.
  *
  * Strategy types:
- *   css          - document.querySelectorAll(value)
- *   cssWithText  - querySelectorAll(value) then filter by text content
- *   ariaLabel    - querySelectorAll(value) then filter by aria-label pattern
- *   textExact    - querySelectorAll(value) then filter where trimmed text === text
- *   textMatch    - querySelectorAll(value) then filter where text includes match
- *   hasChild     - querySelectorAll(value) for parent, using countDivisor for card counting
+ *   css              - document.querySelectorAll(value)
+ *   cssWithText      - querySelectorAll(value) then filter by text content
+ *   ariaLabel        - querySelectorAll(value) then filter by aria-label pattern
+ *   textExact        - querySelectorAll(value) then filter where trimmed text === text
+ *   textMatch        - querySelectorAll(value) then filter where text includes match
+ *   hasChild         - querySelectorAll(value) for parent, using countDivisor for card counting
+ *   sectionByHeading - find heading by text, return its <section> (or a child via `child`)
+ *   walkFromAnchor   - find anchor (CSS + optional text), walk to relative target, optional `then` CSS
  *
  * Scopes: document (default), modal, dropdown
  * Filters: visible, enabled, notAriaHidden, notExtensionUI, notDisabledClass
@@ -64,7 +66,7 @@ export const DEFAULT_SELECTOR_REGISTRIES = {
   },
 
   'linkedin.search': {
-    version: 3,
+    version: 4,
     searchResultCard: {
       strategies: [
         // 2026 lite UI: results live inside a lazy-column with role=list
@@ -98,31 +100,55 @@ export const DEFAULT_SELECTOR_REGISTRIES = {
       filters: ['visible', 'enabled', 'notAriaHidden', 'notExtensionUI']
     },
     moreButton: {
-      strategies: [{ type: 'textMatch', value: 'button', text: 'More' }],
+      strategies: [
+        // 2026 lite UI: aria-label is "More actions" / "More"
+        { type: 'css', value: 'button[aria-label^="More actions"]' },
+        { type: 'css', value: 'button[aria-label="More"]' },
+        { type: 'css', value: 'button[class*="overflow"]' },
+        { type: 'cssWithText', value: 'button', text: 'more' },
+        // Legacy
+        { type: 'textMatch', value: 'button', text: 'More' }
+      ],
       filters: ['visible', 'notAriaHidden'],
       requiresVerification: 'connectMenuOption'
     },
     connectMenuOption: {
+      scope: 'dropdown',
       strategies: [
+        // 2026 lite UI: menuitem with aria-label or text "Connect"
+        { type: 'css', value: '[role="menuitem"][aria-label*="connect" i]' },
+        { type: 'cssWithText', value: '[role="menuitem"]', text: 'connect' },
+        { type: 'cssWithText', value: 'button', text: 'connect' },
+        { type: 'cssWithText', value: 'div.artdeco-dropdown__item', text: 'connect' },
+        // Legacy
         { type: 'cssWithText', value: '[role="menuitem"]', text: 'Connect' },
         { type: 'cssWithText', value: '.artdeco-dropdown__content button', text: 'Connect' }
       ],
-      filters: ['visible'],
-      scope: 'dropdown'
+      filters: ['visible', 'enabled']
     },
     sendButton: {
+      scope: 'modal',
       strategies: [
+        // 2026 lite UI: aria-label-driven targeting
+        { type: 'css', value: 'button[aria-label*="send invitation" i]' },
+        { type: 'css', value: 'button[aria-label*="send now" i]' },
+        { type: 'cssWithText', value: '.artdeco-modal button.artdeco-button--primary', text: 'send' },
+        // Legacy
         { type: 'textExact', value: 'button', text: 'Send without a note' },
         { type: 'textMatch', value: 'button', text: 'without' },
         { type: 'textExact', value: 'button', text: 'Send' }
       ],
-      scope: 'modal',
-      filters: ['visible']
+      filters: ['visible', 'enabled']
     },
     connectInModal: {
-      strategies: [{ type: 'textExact', value: 'button', text: 'Connect' }],
       scope: 'modal',
-      filters: ['visible', 'notExtensionUI']
+      strategies: [
+        { type: 'css', value: '.artdeco-modal button[aria-label*="connect" i]' },
+        { type: 'cssWithText', value: '.artdeco-modal button', text: 'connect' },
+        // Legacy
+        { type: 'textExact', value: 'button', text: 'Connect' }
+      ],
+      filters: ['visible', 'enabled', 'notExtensionUI']
     },
     dismissButton: {
       strategies: [
@@ -229,7 +255,7 @@ export const DEFAULT_SELECTOR_REGISTRIES = {
   },
 
   'linkedin.profile': {
-    version: 3,
+    version: 4,
     profileName: {
       strategies: [
         // 2026 lite UI: name is the first <h2> inside <main>
@@ -258,50 +284,82 @@ export const DEFAULT_SELECTOR_REGISTRIES = {
     },
     profileLocation: {
       strategies: [
-        // 2026 lite UI: location is a <p> in a sibling container after the headline.
-        // No CSS hook is reliable; engine should walk up from headline.
+        // 2026 lite UI: walk from the FIRST <main h2> (the profile name) up to its
+        // section, then pick the 3rd <p> in document order — which is the location
+        // (after headline and education-line). Each <p> lives in its own DIV so
+        // CSS pseudo-selectors like :nth-of-type don't work across the cluster;
+        // we use thenIndex to index into querySelectorAll instead.
+        { type: 'walkFromAnchor', anchorSelector: 'main h2', firstAnchorOnly: true, relative: 'closest-section', then: 'p', thenIndex: 2 },
+        { type: 'walkFromAnchor', anchorSelector: 'main h2', firstAnchorOnly: true, relative: 'closest-section', then: 'p', thenIndex: 1 },
+        { type: 'walkFromAnchor', anchorSelector: 'main h2', firstAnchorOnly: true, relative: 'closest-section', then: 'p:nth-of-type(3)' },
+        { type: 'walkFromAnchor', anchorSelector: 'main h2', firstAnchorOnly: true, relative: 'closest-section', then: 'p:nth-of-type(2)' },
+        // Older LinkedIn: explicit location class
+        { type: 'css', value: 'main span.text-body-small.inline.t-black--light' },
+        { type: 'css', value: '[class*="profile"][class*="location"]' },
         // Legacy fallbacks
         { type: 'css', value: '.text-body-small[data-anonymize="location"]' },
         { type: 'css', value: '[data-anonymize="location"]' },
         { type: 'css', value: 'main .text-body-small.inline.t-black--light' },
         { type: 'css', value: 'main span.text-body-small' }
-      ]
+      ],
+      filters: ['visible']
     },
     profileAbout: {
       strategies: [
+        // 2026 lite UI: <section><h2>About</h2><div>...</div></section>
+        { type: 'sectionByHeading', text: 'About', child: 'div' },
+        { type: 'css', value: 'section[id="about"]' },
+        { type: 'css', value: '#about' },
         // Legacy
         { type: 'css', value: '#about ~ .display-flex .pv-shared-text-with-see-more span[aria-hidden="true"]' },
         { type: 'css', value: '[data-anonymize="person-summary-text"]' },
         { type: 'css', value: 'section[id*="about"] span[aria-hidden="true"]' },
         { type: 'css', value: 'div[data-section="summary"] span[aria-hidden="true"]' },
         { type: 'css', value: '[class*="pv-shared-text-with-see-more"] span[aria-hidden="true"]' }
-      ]
+      ],
+      filters: ['visible']
     },
     profileExperience: {
       strategies: [
+        // 2026 lite UI
+        { type: 'sectionByHeading', text: 'Experience', child: 'div' },
+        { type: 'css', value: 'section[id="experience"]' },
+        { type: 'css', value: '#experience' },
         // Legacy
         { type: 'css', value: '#experience ~ .pvs-list__outer-container li.artdeco-list__item' },
         { type: 'css', value: '.pv-experience-section__list-item' },
         { type: 'css', value: 'section[id*="experience"] li.artdeco-list__item' },
         { type: 'css', value: 'div[data-section="experience"] li' },
         { type: 'css', value: '[class*="experience"] li[class*="artdeco-list__item"]' }
-      ]
+      ],
+      filters: ['visible']
     },
     profileEducation: {
       strategies: [
+        // 2026 lite UI
+        { type: 'sectionByHeading', text: 'Education', child: 'div' },
+        { type: 'css', value: 'section[id="education"]' },
+        { type: 'css', value: '#education' },
         // Legacy
         { type: 'css', value: '#education ~ .pvs-list__outer-container li.artdeco-list__item' },
         { type: 'css', value: 'section[id*="education"] li.artdeco-list__item' },
         { type: 'css', value: 'div[data-section="education"] li' },
         { type: 'css', value: '[class*="education"] li[class*="artdeco-list__item"]' }
-      ]
+      ],
+      filters: ['visible']
     },
     profileSkills: {
       strategies: [
+        // 2026 lite UI: heading text may include a count, e.g. "Skills (50)"
+        { type: 'sectionByHeading', text: 'Skills', child: 'div' },
+        { type: 'css', value: 'section[id="skills"]' },
+        { type: 'css', value: '#skills' },
+        // Legacy
         { type: 'css', value: '#skills ~ .pvs-list__outer-container li.artdeco-list__item span[aria-hidden="true"]' },
         { type: 'css', value: 'section[id*="skills"] li.artdeco-list__item span[aria-hidden="true"]' },
         { type: 'css', value: 'div[data-section="skills"] li span[aria-hidden="true"]' }
-      ]
+      ],
+      filters: ['visible']
     },
     profileConnections: {
       strategies: [
@@ -412,30 +470,44 @@ export const DEFAULT_SELECTOR_REGISTRIES = {
       filters: ['visible', 'enabled']
     },
     addNoteButton: {
-      strategies: [
-        { type: 'textExact', value: 'button', text: 'Add a note' },
-        { type: 'css', value: 'button[aria-label="Add a note"]' },
-        { type: 'cssWithText', value: 'button', text: 'add a note' }
-      ],
       scope: 'modal',
-      filters: ['visible']
+      strategies: [
+        // 2026 lite UI: aria-label or text-driven
+        { type: 'cssWithText', value: 'button', text: 'add a note' },
+        { type: 'cssWithText', value: 'button', text: 'add note' },
+        { type: 'css', value: 'button[aria-label*="add a note" i]' },
+        // Legacy
+        { type: 'textExact', value: 'button', text: 'Add a note' },
+        { type: 'css', value: 'button[aria-label="Add a note"]' }
+      ],
+      filters: ['visible', 'enabled']
     },
     noteTextarea: {
+      scope: 'modal',
       strategies: [
         { type: 'css', value: 'textarea[name="message"]' },
-        { type: 'css', value: '#custom-message' },
-        { type: 'css', value: 'textarea[id*="custom-message"]' }
+        { type: 'css', value: 'textarea[id*="custom-message"]' },
+        { type: 'css', value: 'textarea[aria-label*="message" i]' },
+        { type: 'css', value: '.artdeco-modal textarea' },
+        // Legacy
+        { type: 'css', value: '#custom-message' }
       ],
-      scope: 'modal'
+      filters: ['visible']
     },
     sendConnectButton: {
+      scope: 'modal',
       strategies: [
+        // 2026 lite UI: aria-label-driven first (matches "Send invitation" / "Send now")
+        { type: 'css', value: 'button[aria-label*="send invitation" i]' },
+        { type: 'css', value: 'button[aria-label*="send now" i]' },
+        { type: 'cssWithText', value: 'button.artdeco-button--primary', text: 'send' },
+        { type: 'cssWithText', value: 'button', text: 'send invitation' },
+        // Legacy
         { type: 'textExact', value: 'button', text: 'Send' },
         { type: 'css', value: 'button[aria-label="Send invitation"]' },
         { type: 'css', value: 'button[aria-label^="Send"]' },
         { type: 'cssWithText', value: 'button', text: 'send' }
       ],
-      scope: 'modal',
       filters: ['visible', 'enabled']
     }
   },
@@ -506,7 +578,7 @@ export const DEFAULT_SELECTOR_REGISTRIES = {
   },
 
   'linkedin.connections': {
-    version: 3,
+    version: 4,
     connectionCard: {
       strategies: [
         // 2026 lite UI: card has a "More actions for X" button — locate via that aria-label and walk up if needed
@@ -537,12 +609,18 @@ export const DEFAULT_SELECTOR_REGISTRIES = {
     },
     connectionHeadline: {
       strategies: [
-        // Legacy (text patterns + DOM walk handle 2026 lite UI at the resolver level)
+        // 2026 lite UI: walk from each /in/ anchor up to the listitem, then find a
+        // <p> that does NOT contain a link (the headline is plain text).
+        { type: 'walkFromAnchor', anchorSelector: 'a[href*="/in/"]', relative: 'closest-listitem', then: 'p:not(:has(a))' },
+        { type: 'css', value: '[role="listitem"] p:not(:has(a))' },
         { type: 'css', value: '.mn-connection-card__occupation' },
+        { type: 'css', value: 'p[class*="occupation"]' },
+        // Legacy (text patterns + DOM walk handle 2026 lite UI at the resolver level)
         { type: 'css', value: '[data-anonymize="headline"]' },
         { type: 'css', value: '[class*="mn-connection-card__occupation"]' },
         { type: 'css', value: '[class*="connection-card"] [class*="occupation"]' }
-      ]
+      ],
+      filters: ['visible']
     },
     connectionLink: {
       strategies: [
@@ -557,22 +635,30 @@ export const DEFAULT_SELECTOR_REGISTRIES = {
     },
     connectionDate: {
       strategies: [
-        // 2026 lite UI: text appears as "Connected on <date>" in a <p> — no <time> element
+        // 2026 lite UI: text appears as "Connected on <date>" — match on text content
+        { type: 'cssWithText', value: '[role="listitem"] *', text: 'connected' },
+        { type: 'cssWithText', value: 'time', text: '' },  // any <time> element
+        { type: 'css', value: 'time.mn-connection-card__connection-date' },
+        { type: 'css', value: '[class*="connection-date"]' },
         // Legacy fallbacks first; resolver-level text matching handles the rest
         { type: 'css', value: '.mn-connection-card__connected-time' },
         { type: 'css', value: 'time' },
         { type: 'css', value: '[class*="mn-connection-card__connected"]' },
         { type: 'css', value: '[class*="connection-card"] time' }
-      ]
+      ],
+      filters: ['visible']
     },
+    // nextPageButton: connections page uses infinite scroll — no Next button on
+    // the modern "lite" UI. Playbooks targeting this page should use a `scroll`
+    // action to trigger lazy loading instead of relying on this key.
     nextPageButton: {
       strategies: [
-        // 2026 lite UI: connections page uses infinite scroll — no Next button
-        { type: 'cssWithText', value: 'main button', text: 'Next' },
         { type: 'css', value: 'button[aria-label="Next"]' },
-        { type: 'css', value: '.artdeco-pagination__button--next' },
+        { type: 'cssWithText', value: 'button', text: 'next' },
         { type: 'css', value: 'button[class*="pagination"][class*="next"]' },
-        { type: 'cssWithText', value: 'button', text: 'next' }
+        // Legacy
+        { type: 'cssWithText', value: 'main button', text: 'Next' },
+        { type: 'css', value: '.artdeco-pagination__button--next' }
       ],
       filters: ['visible', 'enabled', 'notDisabledClass']
     }
@@ -626,7 +712,7 @@ export const DEFAULT_SELECTOR_REGISTRIES = {
   },
 
   'linkedin.feed': {
-    version: 3,
+    version: 4,
     feedPost: {
       strategies: [
         // 2026 lite UI: each post is a [role="listitem"] inside the feed lazy column
@@ -710,17 +796,29 @@ export const DEFAULT_SELECTOR_REGISTRIES = {
       filters: ['visible']
     },
     commentInput: {
+      // Comment editors live within an open post listitem (interaction-only;
+      // appears after clicking the Comment button).
       strategies: [
+        { type: 'css', value: '[role="listitem"] [contenteditable="true"][role="textbox"]' },
+        { type: 'css', value: '[role="listitem"] .ql-editor' },
+        { type: 'css', value: '[contenteditable="true"][aria-label*="comment" i]' },
+        { type: 'css', value: 'div.comments-comment-box-comment__text-editor' },
+        // Legacy
         { type: 'css', value: '.comments-comment-box__form [contenteditable="true"]' },
         { type: 'css', value: '[role="textbox"].ql-editor' },
         { type: 'css', value: '.ql-editor[contenteditable="true"]' },
         { type: 'css', value: '[class*="comments-comment-box"] [contenteditable="true"]' },
         { type: 'css', value: 'div[contenteditable="true"][role="textbox"]' }
-      ]
+      ],
+      filters: ['visible']
     },
     commentSubmit: {
       strategies: [
+        { type: 'css', value: 'button[aria-label*="post comment" i]' },
+        { type: 'cssWithText', value: '[role="listitem"] button.artdeco-button--primary', text: 'post' },
+        { type: 'cssWithText', value: '[role="listitem"] button', text: 'post' },
         { type: 'css', value: 'button.comments-comment-box__submit-button' },
+        // Legacy
         { type: 'textExact', value: 'button', text: 'Post' },
         { type: 'css', value: 'button[class*="comments-comment-box__submit"]' },
         { type: 'cssWithText', value: 'button', text: 'post' }
@@ -762,21 +860,31 @@ export const DEFAULT_SELECTOR_REGISTRIES = {
       filters: ['visible']
     },
     postComposer: {
+      scope: 'modal',
       strategies: [
+        { type: 'css', value: '.artdeco-modal [contenteditable="true"][role="textbox"]' },
+        { type: 'css', value: '.artdeco-modal .ql-editor' },
+        { type: 'css', value: '[contenteditable="true"][aria-label*="text editor" i]' },
+        { type: 'css', value: '[contenteditable="true"][data-placeholder*="What" i]' },
+        // Legacy
         { type: 'css', value: '.ql-editor[contenteditable="true"]' },
         { type: 'css', value: '[role="textbox"][contenteditable="true"]' },
         { type: 'css', value: 'div[contenteditable="true"][aria-label*="post"]' }
       ],
-      scope: 'modal'
+      filters: ['visible']
     },
     postSubmitButton: {
+      scope: 'modal',
       strategies: [
+        { type: 'css', value: '.artdeco-modal button.artdeco-button--primary[aria-label*="post" i]' },
+        { type: 'cssWithText', value: '.artdeco-modal button.artdeco-button--primary', text: 'post' },
+        { type: 'cssWithText', value: '.artdeco-modal button', text: 'post' },
         { type: 'css', value: 'button.share-actions__primary-action' },
+        // Legacy
         { type: 'textExact', value: 'button', text: 'Post' },
         { type: 'css', value: 'button[class*="share-actions__primary"]' },
         { type: 'cssWithText', value: 'button', text: 'post' }
       ],
-      scope: 'modal',
       filters: ['visible', 'enabled']
     },
     // Post detail page (for engagement harvesting)

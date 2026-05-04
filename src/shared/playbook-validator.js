@@ -154,7 +154,19 @@ export function looksStaticallyFalse(expr) {
   return /^(false|0|null|undefined|''|"")$/.test(trimmed);
 }
 
-const VALID_STRATEGY_TYPES = ['css', 'cssWithText', 'ariaLabel', 'textExact', 'textMatch', 'hasChild'];
+const VALID_STRATEGY_TYPES = [
+  'css', 'cssWithText', 'ariaLabel', 'textExact', 'textMatch', 'hasChild',
+  // v4: walk-from-heading / walk-from-anchor strategies (use anchorSelector /
+  // headingSelector + text instead of `value`)
+  'sectionByHeading', 'walkFromAnchor'
+];
+
+// Strategy types that don't require a top-level `value` field. ariaLabel uses
+// `pattern`; sectionByHeading uses `headingSelector`+`text`; walkFromAnchor
+// uses `anchorSelector`+`relative`+`then`.
+const STRATEGY_TYPES_WITHOUT_VALUE = new Set([
+  'ariaLabel', 'sectionByHeading', 'walkFromAnchor'
+]);
 
 /**
  * Bug 1: top-level metadata keys in a selector registry are not selector
@@ -201,9 +213,10 @@ export function validateSelectorRegistry(registry) {
         errors.push(`${key}.strategies[${i}]: unknown type "${s.type}"`);
         continue;
       }
-      // ariaLabel filters by `pattern`, not `value`, so the value field
-      // is optional for that strategy.
-      if (typeof s.value !== 'string' && s.type !== 'ariaLabel') {
+      // Some strategies don't use a top-level `value` (ariaLabel uses
+      // `pattern`; sectionByHeading / walkFromAnchor use heading/anchor
+      // selectors). For those, value is optional.
+      if (typeof s.value !== 'string' && !STRATEGY_TYPES_WITHOUT_VALUE.has(s.type)) {
         errors.push(`${key}.strategies[${i}]: missing value (string)`);
       }
     }

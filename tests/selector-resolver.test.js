@@ -438,6 +438,292 @@ describe('SelectorResolver', () => {
     });
   });
 
+  // ── v4: sectionByHeading strategy ────────────────────────────────────────
+  describe('sectionByHeading strategy', () => {
+    test('returns the section element when no `child` is set', () => {
+      document.body.innerHTML = `
+        <main>
+          <section><h2>About</h2><div class="about-body">about content</div></section>
+          <section><h2>Experience</h2><div class="exp-body">exp content</div></section>
+        </main>
+      `;
+      const reg = {
+        about: {
+          strategies: [{ type: 'sectionByHeading', text: 'About' }]
+        }
+      };
+      const r = new SelectorResolver(reg);
+      const results = r.findAll('about');
+      expect(results).toHaveLength(1);
+      expect(results[0].tagName).toBe('SECTION');
+      expect(results[0].querySelector('h2').textContent).toBe('About');
+    });
+
+    test('returns the matching child when `child` is set', () => {
+      document.body.innerHTML = `
+        <main>
+          <section><h2>About</h2><div class="about-body">about content</div></section>
+        </main>
+      `;
+      const reg = {
+        aboutBody: {
+          strategies: [{ type: 'sectionByHeading', text: 'About', child: 'div' }]
+        }
+      };
+      const r = new SelectorResolver(reg);
+      const results = r.findAll('aboutBody');
+      expect(results).toHaveLength(1);
+      expect(results[0].className).toBe('about-body');
+    });
+
+    test('matches by case-insensitive substring (so "Skills (50)" matches "Skills")', () => {
+      document.body.innerHTML = `
+        <main>
+          <section><h2>Skills (50)</h2><div class="skills-body">skill list</div></section>
+        </main>
+      `;
+      const reg = {
+        skills: {
+          strategies: [{ type: 'sectionByHeading', text: 'Skills', child: 'div' }]
+        }
+      };
+      const r = new SelectorResolver(reg);
+      const results = r.findAll('skills');
+      expect(results).toHaveLength(1);
+      expect(results[0].className).toBe('skills-body');
+    });
+
+    test('returns empty when no heading matches', () => {
+      document.body.innerHTML = `
+        <main>
+          <section><h2>About</h2><div>x</div></section>
+        </main>
+      `;
+      const reg = {
+        skills: {
+          strategies: [{ type: 'sectionByHeading', text: 'Skills', child: 'div' }]
+        }
+      };
+      const r = new SelectorResolver(reg);
+      expect(r.findAll('skills')).toEqual([]);
+    });
+  });
+
+  // ── v4: walkFromAnchor strategy ──────────────────────────────────────────
+  describe('walkFromAnchor strategy', () => {
+    test('walks from anchor to parent then resolves a child selector', () => {
+      document.body.innerHTML = `
+        <main>
+          <h1>Name</h1>
+          <p>Headline</p>
+          <p class="loc">Location</p>
+        </main>
+      `;
+      // Note: anchor is h1 — its parent is <main>. Inside <main>, p:nth-of-type(2)
+      // is the second <p> (Location).
+      const reg = {
+        loc: {
+          strategies: [{
+            type: 'walkFromAnchor',
+            anchorSelector: 'main h1',
+            relative: 'parent',
+            then: 'p:nth-of-type(2)'
+          }]
+        }
+      };
+      const r = new SelectorResolver(reg);
+      const results = r.findAll('loc');
+      expect(results).toHaveLength(1);
+      expect(results[0].textContent).toBe('Location');
+    });
+
+    test('relative: closest-section returns the enclosing section', () => {
+      document.body.innerHTML = `
+        <section>
+          <h2>Hello</h2>
+          <p>p1</p>
+          <p>p2</p>
+        </section>
+      `;
+      const reg = {
+        target: {
+          strategies: [{
+            type: 'walkFromAnchor',
+            anchorSelector: 'h2',
+            relative: 'closest-section',
+            then: 'p:nth-of-type(2)'
+          }]
+        }
+      };
+      const r = new SelectorResolver(reg);
+      const results = r.findAll('target');
+      expect(results).toHaveLength(1);
+      expect(results[0].textContent).toBe('p2');
+    });
+
+    test('relative: closest-listitem walks up to the listitem and resolves a child p', () => {
+      // The connections-page case: anchor is an /in/ link; we want to find the
+      // headline p living as a sibling of that anchor inside the listitem.
+      document.body.innerHTML = `
+        <ul>
+          <li role="listitem">
+            <a href="/in/foo"><span>Name</span></a>
+            <p>Engineer at Foo</p>
+          </li>
+        </ul>
+      `;
+      const reg = {
+        headline: {
+          strategies: [{
+            type: 'walkFromAnchor',
+            anchorSelector: 'a[href*="/in/"]',
+            relative: 'closest-listitem',
+            then: 'p'
+          }]
+        }
+      };
+      const r = new SelectorResolver(reg);
+      const results = r.findAll('headline');
+      expect(results.length).toBeGreaterThanOrEqual(1);
+      expect(results[0].textContent).toBe('Engineer at Foo');
+    });
+
+    test('anchorText filters anchors by case-insensitive substring', () => {
+      document.body.innerHTML = `
+        <div><span class="a">connect now</span><p class="next">connect target</p></div>
+        <div><span class="a">other</span><p class="next">other target</p></div>
+      `;
+      const reg = {
+        target: {
+          strategies: [{
+            type: 'walkFromAnchor',
+            anchorSelector: 'span.a',
+            anchorText: 'connect',
+            relative: 'parent',
+            then: 'p.next'
+          }]
+        }
+      };
+      const r = new SelectorResolver(reg);
+      const results = r.findAll('target');
+      expect(results).toHaveLength(1);
+      expect(results[0].textContent).toBe('connect target');
+    });
+
+    test('thenIndex picks the Nth match across all descendants', () => {
+      // Each <p> lives in its own DIV — :nth-of-type can't reach across the cluster,
+      // so we use thenIndex to index into querySelectorAll-style results.
+      document.body.innerHTML = `
+        <section>
+          <h2>Name</h2>
+          <div><p>headline</p><p>edu-line</p></div>
+          <div><p>location</p></div>
+        </section>
+      `;
+      const reg = {
+        loc: {
+          strategies: [{
+            type: 'walkFromAnchor',
+            anchorSelector: 'h2',
+            firstAnchorOnly: true,
+            relative: 'closest-section',
+            then: 'p',
+            thenIndex: 2
+          }]
+        }
+      };
+      const r = new SelectorResolver(reg);
+      const results = r.findAll('loc');
+      expect(results).toHaveLength(1);
+      expect(results[0].textContent).toBe('location');
+    });
+
+    test('firstAnchorOnly stops after the first matching anchor', () => {
+      document.body.innerHTML = `
+        <section><h2>One</h2><p>p1</p></section>
+        <section><h2>Two</h2><p>p2</p></section>
+      `;
+      const reg = {
+        target: {
+          strategies: [{
+            type: 'walkFromAnchor',
+            anchorSelector: 'h2',
+            firstAnchorOnly: true,
+            relative: 'closest-section',
+            then: 'p'
+          }]
+        }
+      };
+      const r = new SelectorResolver(reg);
+      const results = r.findAll('target');
+      expect(results).toHaveLength(1);
+      expect(results[0].textContent).toBe('p1');
+    });
+
+    test('returns empty array when anchor not found (no throw)', () => {
+      document.body.innerHTML = `<div>nothing</div>`;
+      const reg = {
+        target: {
+          strategies: [{
+            type: 'walkFromAnchor',
+            anchorSelector: 'main h1',
+            relative: 'parent',
+            then: 'p'
+          }]
+        }
+      };
+      const r = new SelectorResolver(reg);
+      expect(r.findAll('target')).toEqual([]);
+    });
+  });
+
+  // ── v4: registry version bumps + new top-of-list strategies ──────────────
+  describe('v4 registry — version bumps and walk/heading strategies', () => {
+    test('rotted registries report version 4', () => {
+      const { DEFAULT_SELECTOR_REGISTRIES } = require('../src/defaults/selectors.js');
+      expect(DEFAULT_SELECTOR_REGISTRIES['linkedin.profile'].version).toBe(4);
+      expect(DEFAULT_SELECTOR_REGISTRIES['linkedin.feed'].version).toBe(4);
+      expect(DEFAULT_SELECTOR_REGISTRIES['linkedin.connections'].version).toBe(4);
+      expect(DEFAULT_SELECTOR_REGISTRIES['linkedin.search'].version).toBe(4);
+    });
+
+    test('linkedin.profile.profileAbout has sectionByHeading at the top', () => {
+      const { DEFAULT_SELECTOR_REGISTRIES } = require('../src/defaults/selectors.js');
+      const entry = DEFAULT_SELECTOR_REGISTRIES['linkedin.profile'].profileAbout;
+      expect(entry.strategies[0].type).toBe('sectionByHeading');
+      expect(entry.strategies[0].text.toLowerCase()).toBe('about');
+      expect(entry.strategies[0].child).toBe('div');
+    });
+
+    test('linkedin.profile.profileLocation has walkFromAnchor at the top', () => {
+      const { DEFAULT_SELECTOR_REGISTRIES } = require('../src/defaults/selectors.js');
+      const entry = DEFAULT_SELECTOR_REGISTRIES['linkedin.profile'].profileLocation;
+      expect(entry.strategies[0].type).toBe('walkFromAnchor');
+      expect(entry.strategies[0].anchorSelector).toContain('h2');
+    });
+
+    test('linkedin.profile modal-only keys carry scope: modal', () => {
+      const { DEFAULT_SELECTOR_REGISTRIES } = require('../src/defaults/selectors.js');
+      const reg = DEFAULT_SELECTOR_REGISTRIES['linkedin.profile'];
+      expect(reg.addNoteButton.scope).toBe('modal');
+      expect(reg.noteTextarea.scope).toBe('modal');
+      expect(reg.sendConnectButton.scope).toBe('modal');
+    });
+
+    test('linkedin.connections.connectionHeadline has walkFromAnchor at the top', () => {
+      const { DEFAULT_SELECTOR_REGISTRIES } = require('../src/defaults/selectors.js');
+      const entry = DEFAULT_SELECTOR_REGISTRIES['linkedin.connections'].connectionHeadline;
+      expect(entry.strategies[0].type).toBe('walkFromAnchor');
+      expect(entry.strategies[0].relative).toBe('closest-listitem');
+    });
+
+    test('linkedin.feed.postComposer carries scope: modal', () => {
+      const { DEFAULT_SELECTOR_REGISTRIES } = require('../src/defaults/selectors.js');
+      expect(DEFAULT_SELECTOR_REGISTRIES['linkedin.feed'].postComposer.scope).toBe('modal');
+      expect(DEFAULT_SELECTOR_REGISTRIES['linkedin.feed'].postSubmitButton.scope).toBe('modal');
+    });
+  });
+
   // ── Bug 3: bad selector warns once, doesn't throw ────────────────────────
   describe('_executeStrategy — bad selector logs once and does not throw', () => {
     test('does not throw for an invalid CSS selector', () => {

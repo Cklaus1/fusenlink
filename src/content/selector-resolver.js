@@ -316,6 +316,73 @@ export class SelectorResolver {
             break;
           }
 
+          case 'sectionByHeading': {
+            // Find a heading by case-insensitive substring match, then return
+            // its enclosing <section> (or a child of that section if `child` is set).
+            // strategy.headingSelector defaults to 'h1, h2, h3'.
+            // strategy.text — required substring (case-insensitive).
+            // strategy.child — optional CSS selector for a descendant of the section.
+            const headSel = strategy.headingSelector || 'h1, h2, h3';
+            const target = (textOverride || strategy.text || '').toLowerCase();
+            const headings = Array.from(root.querySelectorAll(headSel));
+            for (const h of headings) {
+              const text = h.textContent.trim().toLowerCase();
+              if (target && !text.includes(target)) continue;
+              const section = h.closest('section') || h.parentElement;
+              if (!section) continue;
+              if (strategy.child) {
+                const child = section.querySelector(strategy.child);
+                if (child) results.push(child);
+              } else {
+                results.push(section);
+              }
+            }
+            break;
+          }
+
+          case 'walkFromAnchor': {
+            // Find an anchor element (CSS + optional text), then walk to a relative
+            // target and optionally apply a CSS selector under that target.
+            // strategy.anchorSelector — CSS selector for the anchor.
+            // strategy.anchorText — optional case-insensitive substring to require.
+            // strategy.relative — one of: 'next-sibling', 'parent', 'closest-section', 'closest-li', 'closest-listitem'.
+            // strategy.then — optional CSS selector resolved within the relative target.
+            // strategy.thenIndex — optional 0-based index into the `then` matches (default 0 — i.e. first match).
+            // strategy.firstAnchorOnly — if true, only walk from the first matching anchor (use to avoid h2-per-section explosions).
+            const anchors = Array.from(root.querySelectorAll(strategy.anchorSelector || '*'));
+            const target = (strategy.anchorText || '').toLowerCase();
+            const idx = Number.isInteger(strategy.thenIndex) ? strategy.thenIndex : 0;
+            for (const a of anchors) {
+              if (target) {
+                const text = a.textContent.trim().toLowerCase();
+                if (!text.includes(target)) continue;
+              }
+              let el;
+              switch (strategy.relative) {
+                case 'next-sibling': el = a.nextElementSibling; break;
+                case 'parent': el = a.parentElement; break;
+                case 'closest-section': el = a.closest('section'); break;
+                case 'closest-li': el = a.closest('li'); break;
+                case 'closest-listitem': el = a.closest('[role="listitem"]'); break;
+                default: el = a.parentElement;
+              }
+              if (!el) continue;
+              if (strategy.then) {
+                if (idx > 0) {
+                  const all = el.querySelectorAll(strategy.then);
+                  if (all[idx]) results.push(all[idx]);
+                } else {
+                  const child = el.querySelector(strategy.then);
+                  if (child) results.push(child);
+                }
+              } else {
+                results.push(el);
+              }
+              if (strategy.firstAnchorOnly) break;
+            }
+            break;
+          }
+
           default:
             console.warn(`SelectorResolver: unknown strategy type "${strategy.type}"`);
         }
