@@ -1,7 +1,7 @@
 /**
  * Tests for PlaybookEngine
  */
-import { PlaybookEngine } from '../src/content/engine.js';
+import { PlaybookEngine, classifyError } from '../src/content/engine.js';
 
 // Mock scrollIntoView for jsdom
 Element.prototype.scrollIntoView = jest.fn();
@@ -791,6 +791,341 @@ describe('PlaybookEngine', () => {
         expect(engine.vars.lastError).toBe('boom from click');
       } finally {
         ACTION_REGISTRY.click = originalClick;
+      }
+    });
+  });
+
+  describe('lastError cleared between iterations (Bug 11)', () => {
+    test('forEach clears lastError at the start of each iteration', async () => {
+      const { ACTION_REGISTRY } = require('../src/content/actions/index.js');
+      const seenAtStart = [];
+      ACTION_REGISTRY.__captureLastError = (step, engine) => {
+        seenAtStart.push(engine.vars.lastError);
+      };
+
+      try {
+        const playbook = makePlaybook([
+          { action: 'setVar', var: 'items', value: [1, 2, 3] },
+          // Pre-set a stale lastError to simulate a prior failure.
+          { action: 'setVar', var: 'lastError', value: 'stale' },
+          {
+            action: 'forEach',
+            items: '$items',
+            itemVar: 'item',
+            steps: [{ action: '__captureLastError' }]
+          }
+        ]);
+        const engine = new PlaybookEngine(playbook, emptyRegistry);
+        await engine.run();
+        // Every iteration should observe a cleared (undefined) lastError.
+        expect(seenAtStart).toEqual([undefined, undefined, undefined]);
+      } finally {
+        delete ACTION_REGISTRY.__captureLastError;
+      }
+    });
+
+    test('loop clears lastError at the start of each iteration', async () => {
+      const { ACTION_REGISTRY } = require('../src/content/actions/index.js');
+      const observed = [];
+      ACTION_REGISTRY.__capture = (step, engine) => {
+        observed.push(engine.vars.lastError);
+      };
+
+      try {
+        const playbook = makePlaybook([
+          { action: 'setVar', var: 'i', value: 0 },
+          { action: 'setVar', var: 'lastError', value: 'stale-from-prior-run' },
+          {
+            action: 'loop',
+            breakIf: '$i >= 3',
+            steps: [
+              { action: '__capture' },
+              { action: 'incrementVar', var: 'i' }
+            ]
+          }
+        ]);
+        const engine = new PlaybookEngine(playbook, emptyRegistry);
+        await engine.run();
+        // Each loop iteration must observe a cleared lastError.
+        expect(observed).toEqual([undefined, undefined, undefined]);
+      } finally {
+        delete ACTION_REGISTRY.__capture;
+      }
+    });
+  });
+
+  describe('safetyCap (Bug 12)', () => {
+    test('safetyCap alone caps the loop', async () => {
+      const playbook = makePlaybook([
+        { action: 'setVar', var: 'i', value: 0 },
+        {
+          action: 'loop',
+          safetyCap: 7,
+          steps: [{ action: 'incrementVar', var: 'i' }]
+        }
+      ]);
+      const engine = new PlaybookEngine(playbook, emptyRegistry);
+      await engine.run();
+      expect(engine.vars.i).toBe(7);
+    });
+
+    test('safetyCap takes priority over legacy maxIterations', async () => {
+      const playbook = makePlaybook([
+        { action: 'setVar', var: 'i', value: 0 },
+        {
+          action: 'loop',
+          safetyCap: 3,
+          maxIterations: 100,
+          steps: [{ action: 'incrementVar', var: 'i' }]
+        }
+      ]);
+      const engine = new PlaybookEngine(playbook, emptyRegistry);
+      await engine.run();
+      expect(engine.vars.i).toBe(3);
+    });
+
+    test('legacy maxIterations still works when safetyCap is absent', async () => {
+      const playbook = makePlaybook([
+        { action: 'setVar', var: 'i', value: 0 },
+        {
+          action: 'loop',
+          maxIterations: 4,
+          steps: [{ action: 'incrementVar', var: 'i' }]
+        }
+      ]);
+      const engine = new PlaybookEngine(playbook, emptyRegistry);
+      await engine.run();
+      expect(engine.vars.i).toBe(4);
+    });
+
+    test('breakIf still wins if it fires before safetyCap', async () => {
+      const playbook = makePlaybook([
+        { action: 'setVar', var: 'i', value: 0 },
+        {
+          action: 'loop',
+          breakIf: '$i >= 2',
+          safetyCap: 100,
+          steps: [{ action: 'incrementVar', var: 'i' }]
+        }
+      ]);
+      const engine = new PlaybookEngine(playbook, emptyRegistry);
+      await engine.run();
+      expect(engine.vars.i).toBe(2);
+    });
+  });
+
+  describe('runInteractive summary fallback (Bug 16)', () => {
+    let originalSendMessage;
+    beforeEach(() => {
+      originalSendMessage = chrome.runtime.sendMessage.getMockImplementation();
+    });
+    afterEach(() => {
+      chrome.runtime.sendMessage.mockImplementation(originalSendMessage);
+    });
+
+    test('returns last reasoning when maxCycles exhausts without done', async () => {
+      let cycle = 0;
+      chrome.runtime.sendMessage.mockImplementation((message, callback) => {
+        if (message.action === 'aiRequest') {
+          cycle++;
+          callback({
+            parsed: {
+              reasoning: `cycle ${cycle} reasoning text`,
+              steps: [{ action: 'log', message: 'hi' }],
+              done: false
+            },
+            usage: { prompt_tokens: 1, completion_tokens: 1 }
+          });
+        } else {
+          callback({ success: true });
+        }
+      });
+
+      const playbook = {
+        id: 'no-done',
+        version: 1,
+        name: 'Never Done',
+        trustLevel: 'interactive',
+        userRequest: 'loop forever',
+        steps: [],
+        settings: { delayMs: 1, maxCycles: 2 }
+      };
+      const engine = new PlaybookEngine(playbook, emptyRegistry);
+      const result = await engine.run();
+      expect(result.summary).toBe('cycle 2 reasoning text');
+      expect(result.exitReason).toBe('max_cycles');
+    });
+
+    test('exitReason is "done" when AI signals done', async () => {
+      chrome.runtime.sendMessage.mockImplementation((message, callback) => {
+        if (message.action === 'aiRequest') {
+          callback({
+            parsed: { done: true, summary: 'all done' },
+            usage: { prompt_tokens: 1, completion_tokens: 1 }
+          });
+        } else {
+          callback({ success: true });
+        }
+      });
+      const playbook = {
+        id: 'done',
+        version: 1,
+        name: 'Done',
+        trustLevel: 'interactive',
+        userRequest: 'finish',
+        steps: [],
+        settings: { delayMs: 1, maxCycles: 5 }
+      };
+      const engine = new PlaybookEngine(playbook, emptyRegistry);
+      const result = await engine.run();
+      expect(result.exitReason).toBe('done');
+      expect(result.summary).toBe('all done');
+    });
+
+    test('exitReason is "budget" when token budget is exceeded', async () => {
+      chrome.runtime.sendMessage.mockImplementation((message, callback) => {
+        if (message.action === 'aiRequest') {
+          callback({
+            parsed: {
+              reasoning: 'still going',
+              steps: [{ action: 'log', message: 'hi' }],
+              done: false
+            },
+            usage: { prompt_tokens: 70000, completion_tokens: 0 }
+          });
+        } else {
+          callback({ success: true });
+        }
+      });
+      const playbook = {
+        id: 'budget-exit',
+        version: 1,
+        name: 'Budget Exit',
+        trustLevel: 'interactive',
+        userRequest: 'spend tokens',
+        steps: [],
+        settings: { delayMs: 1, maxCycles: 5, maxTokensBudget: 60000 }
+      };
+      const engine = new PlaybookEngine(playbook, emptyRegistry);
+      const result = await engine.run();
+      expect(result.exitReason).toBe('budget');
+      expect(result.summary).toBeTruthy();
+    });
+
+    test('exitReason is "no_plan" when AI returns null parsed', async () => {
+      chrome.runtime.sendMessage.mockImplementation((message, callback) => {
+        if (message.action === 'aiRequest') {
+          callback({ parsed: null, usage: { prompt_tokens: 1, completion_tokens: 1 } });
+        } else {
+          callback({ success: true });
+        }
+      });
+      const playbook = {
+        id: 'no-plan',
+        version: 1,
+        name: 'No Plan',
+        trustLevel: 'interactive',
+        userRequest: 'fail',
+        steps: [],
+        settings: { delayMs: 1, maxCycles: 2 }
+      };
+      const engine = new PlaybookEngine(playbook, emptyRegistry);
+      const result = await engine.run();
+      expect(result.exitReason).toBe('no_plan');
+      expect(result.summary).toBeTruthy();
+    });
+  });
+
+  describe('classifyError (Bug 17)', () => {
+    let originalSendMessage;
+    beforeEach(() => {
+      originalSendMessage = chrome.runtime.sendMessage.getMockImplementation();
+    });
+    afterEach(() => {
+      chrome.runtime.sendMessage.mockImplementation(originalSendMessage);
+    });
+
+    test('classifies network/timeout messages as transient', () => {
+      expect(classifyError('connection timeout')).toBe('transient');
+      expect(classifyError('fetch failed')).toBe('transient');
+      expect(classifyError('aborted')).toBe('transient');
+      expect(classifyError('ECONNREFUSED')).toBe('transient');
+      expect(classifyError('network error')).toBe('transient');
+    });
+
+    test('classifies auth errors as auth', () => {
+      expect(classifyError('HTTP 401 Unauthorized')).toBe('auth');
+      expect(classifyError('403 forbidden')).toBe('auth');
+      expect(classifyError('Invalid API key')).toBe('auth');
+    });
+
+    test('classifies rate-limit errors as rate_limit', () => {
+      expect(classifyError('429 Too Many Requests')).toBe('rate_limit');
+      expect(classifyError('rate limit exceeded')).toBe('rate_limit');
+    });
+
+    test('returns null for empty/falsy input', () => {
+      expect(classifyError(null)).toBeNull();
+      expect(classifyError('')).toBeNull();
+      expect(classifyError(undefined)).toBeNull();
+    });
+
+    test('falls back to unknown for unrecognized messages', () => {
+      expect(classifyError('something weird happened')).toBe('unknown');
+    });
+
+    test('previousResults includes errorClass when a step throws mid-cycle', async () => {
+      const { ACTION_REGISTRY } = require('../src/content/actions/index.js');
+      const originalLog = ACTION_REGISTRY.log;
+      let thrown = false;
+      ACTION_REGISTRY.log = () => {
+        if (!thrown) { thrown = true; throw new Error('fetch network timeout'); }
+      };
+
+      const inputs = [];
+      chrome.runtime.sendMessage.mockImplementation((message, callback) => {
+        if (message.action === 'aiRequest') {
+          inputs.push(JSON.parse(message.input));
+          if (inputs.length === 1) {
+            callback({
+              parsed: {
+                reasoning: 'try logging',
+                steps: [{ action: 'log', message: 'will throw' }],
+                done: false
+              },
+              usage: { prompt_tokens: 1, completion_tokens: 1 }
+            });
+          } else {
+            callback({
+              parsed: { done: true, summary: 'gave up' },
+              usage: { prompt_tokens: 1, completion_tokens: 1 }
+            });
+          }
+        } else {
+          callback({ success: true });
+        }
+      });
+
+      try {
+        const playbook = {
+          id: 'classify',
+          version: 1,
+          name: 'Classify',
+          trustLevel: 'interactive',
+          userRequest: 'classify err',
+          steps: [],
+          settings: { delayMs: 1, maxCycles: 3 }
+        };
+        const engine = new PlaybookEngine(playbook, emptyRegistry);
+        await engine.run();
+
+        expect(inputs.length).toBeGreaterThanOrEqual(2);
+        const cycle2 = inputs[1];
+        expect(cycle2.previousResults).toBeTruthy();
+        expect(cycle2.previousResults.error).toMatch(/network|timeout|fetch/i);
+        expect(cycle2.previousResults.errorClass).toBe('transient');
+      } finally {
+        ACTION_REGISTRY.log = originalLog;
       }
     });
   });

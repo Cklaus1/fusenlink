@@ -18,6 +18,21 @@ import { ACTION_REGISTRY } from './actions/index.js';
 // Sentinel for breaking out of loops
 class BreakSignal {}
 
+/**
+ * Bug 17: classify a step error so the AI knows whether to retry or abandon.
+ * Transient and rate_limit errors are typically worth retrying; auth errors
+ * are not. The AI prompt instructs the model to honor errorClass.
+ * @param {string} msg
+ * @returns {('transient'|'auth'|'rate_limit'|'unknown'|null)}
+ */
+export function classifyError(msg) {
+  if (!msg) return null;
+  if (/timeout|aborted|ECONNREFUSED|fetch|network/i.test(msg)) return 'transient';
+  if (/401|403|invalid api key/i.test(msg)) return 'auth';
+  if (/429|rate limit/i.test(msg)) return 'rate_limit';
+  return 'unknown';
+}
+
 const INTERACTIVE_SYSTEM_PROMPT = `You are an AI agent controlling a LinkedIn browser automation extension.
 You receive the current page state and must decide what actions to take next.
 
@@ -54,7 +69,8 @@ RULES:
 - Always explain your reasoning
 - Use "prompt" to ask the user when uncertain
 - Never auto-send messages or accept connections without user confirmation
-- Prefer reading data before acting on it`;
+- Prefer reading data before acting on it
+- If previousResults.errorClass is "transient" or "rate_limit", retry the same step rather than abandoning the task. Only abandon on "auth" or repeated "unknown" errors.`;
 
 export class PlaybookEngine {
   /**
@@ -194,10 +210,17 @@ export class PlaybookEngine {
 
     let previousResults = null;
     let runError = null;
+    // Bug 16: track the last reasoning + exit reason so we always have
+    // *something* to surface as a summary, even if maxCycles exhausts
+    // without a `done` plan.
+    let lastReasoning = null;
+    let exitReason = 'max_cycles';
+    let cyclesExecuted = 0;
 
     try {
       for (let cycle = 0; cycle < maxCycles; cycle++) {
-        if (this.stopRequested) break;
+        cyclesExecuted = cycle + 1;
+        if (this.stopRequested) { exitReason = 'stopped'; break; }
 
         const pageState = snapshot();
 
@@ -221,6 +244,7 @@ export class PlaybookEngine {
         Overlay.updateStatus(`Tokens: ${totalTokensUsed}/${maxTokensBudget} (cycle ${cycle + 1}/${maxCycles})`);
         if (totalTokensUsed > maxTokensBudget) {
           Overlay.updateStatus(`Token budget exceeded (${totalTokensUsed}/${maxTokensBudget}) — stopping`);
+          exitReason = 'budget';
           break;
         }
 
@@ -240,17 +264,23 @@ export class PlaybookEngine {
         }
         if (!plan) {
           Overlay.updateStatus('AI returned no actionable plan');
+          exitReason = 'no_plan';
           break;
         }
+
+        // Bug 16: capture each cycle's reasoning so we can fall back to it
+        // when no explicit done summary is produced.
+        if (plan.reasoning) lastReasoning = plan.reasoning;
 
         if (plan.done || plan.action === 'done') {
           Overlay.updateStatus(plan.summary || 'Task complete');
           this._lastInteractiveSummary = plan.summary || null;
+          exitReason = 'done';
           break;
         }
 
         const steps = plan.steps || (plan.action ? [plan] : []);
-        if (steps.length === 0) break;
+        if (steps.length === 0) { exitReason = 'no_plan'; break; }
 
         Overlay.updateStatus(plan.reasoning || 'Executing...');
 
@@ -271,10 +301,14 @@ export class PlaybookEngine {
         // context is critical for the token-budget enforcement above to be
         // meaningful — without this cap, vars accumulate across cycles and
         // every cycle's prompt grows unboundedly large.
+        // Bug 17: classify any step error so the AI can decide whether to
+        // retry (transient/rate_limit) or abandon (auth).
         previousResults = {
           executedSteps: executedCount,
-          lastStepError: stepError || null,
-          varsSnapshot: this._boundedVarsSnapshot()
+          vars: this._boundedVarsSnapshot(),
+          ...(stepError
+            ? { error: stepError, errorClass: classifyError(stepError), lastStepError: stepError }
+            : { lastStepError: null })
         };
 
         await DomOps.delay(500);
@@ -283,14 +317,24 @@ export class PlaybookEngine {
       console.error('Interactive mode error:', err);
       Overlay.updateStatus(`Error: ${err.message}`);
       runError = err.message;
+      exitReason = 'error';
     }
+
+    // Bug 16: pick the best summary we have. Priority:
+    //   1. explicit AI-provided summary on done
+    //   2. last reasoning string we saw mid-loop
+    //   3. a generic "ended after N cycles" string
+    const summary = this._lastInteractiveSummary
+      || lastReasoning
+      || `Ended after ${cyclesExecuted} cycle${cyclesExecuted === 1 ? '' : 's'} without summary`;
 
     const result = {
       processedCount: this.vars.processedCount || 0,
       skippedCount: this.vars.skippedCount || 0,
       stopped: this.stopRequested,
       tokensUsed: totalTokensUsed,
-      ...(this._lastInteractiveSummary ? { summary: this._lastInteractiveSummary } : {}),
+      summary,
+      exitReason,
       ...(runError ? { error: runError } : {})
     };
 
@@ -447,15 +491,26 @@ export class PlaybookEngine {
 
   /** Execute a loop step. */
   async _executeLoop(step) {
-    // Bug 11: honor maxIterations as a safety cap so a missing/incorrect
-    // breakIf can't run forever.
-    const maxIterations = typeof step.maxIterations === 'number' ? step.maxIterations : Infinity;
+    // Bug 12: prefer the new "safetyCap" field over legacy "maxIterations".
+    // Both mean the same thing — a hard cap on iterations regardless of
+    // breakIf — but safetyCap is the surfaced name authors should use.
+    const cap = typeof step.safetyCap === 'number'
+      ? step.safetyCap
+      : (typeof step.maxIterations === 'number' ? step.maxIterations : Infinity);
     let iter = 0;
     while (!this.stopRequested) {
-      if (iter >= maxIterations) break;
+      if (iter >= cap) {
+        if (cap !== Infinity) {
+          console.warn(`PlaybookEngine: loop hit safetyCap ${cap}; breaking`);
+        }
+        break;
+      }
       if (step.breakIf) {
         if (evaluate(step.breakIf, this.vars)) break;
       }
+      // Bug 11: clear lastError at the start of each iteration so a stale
+      // error from a previous iteration doesn't poison subsequent ones.
+      delete this.vars.lastError;
       try {
         await this._executeSteps(step.steps);
       } catch (err) {
@@ -480,6 +535,9 @@ export class PlaybookEngine {
       if (step.breakIf && evaluate(step.breakIf, this.vars)) break;
 
       this.vars[step.itemVar] = item;
+      // Bug 11: fresh slate per iteration — a transient error on item N
+      // shouldn't leave $lastError set when iterating item N+1.
+      delete this.vars.lastError;
 
       try {
         await this._executeSteps(step.steps);

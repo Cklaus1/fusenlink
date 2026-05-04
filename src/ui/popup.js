@@ -14,6 +14,20 @@
 
 import { PLAYBOOK_URLS, DEFAULT_DAILY_LIMITS, timeAgo } from '../shared/constants.js';
 
+// ==================== DATE HELPERS (Bug 1) ====================
+
+function localDateString(d = new Date()) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+function isToday(timestamp) {
+  if (!timestamp) return false;
+  return localDateString(new Date(timestamp)) === localDateString();
+}
+
 // --- DOM refs ---
 const playbooksList = document.getElementById('playbooks');
 const scheduleList = document.getElementById('scheduleList');
@@ -61,9 +75,11 @@ let aiReady = false;
 let allPlaybooks = {};
 let dailyLimits = { ...DEFAULT_DAILY_LIMITS };
 
-// Boot: load limits from settings, check AI, then load playbooks
-chrome.storage.local.get('dailyLimits', (result) => {
-  if (result.dailyLimits) dailyLimits = { ...DEFAULT_DAILY_LIMITS, ...result.dailyLimits };
+// Boot: load limits via message API (Bug 8), check AI, then load playbooks
+chrome.runtime.sendMessage({ action: 'getDailyLimits' }, (result) => {
+  if (!chrome.runtime.lastError && result) {
+    dailyLimits = { ...DEFAULT_DAILY_LIMITS, ...result };
+  }
 
   let booted = false;
   const boot = (status) => {
@@ -83,6 +99,50 @@ chrome.storage.local.get('dailyLimits', (result) => {
   // Fallback in case the SW is slow
   setTimeout(() => boot(null), 1500);
 });
+
+// Bug 8: reflect CLI-driven dailyLimits changes in open popup
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area === 'local' && changes.dailyLimits) {
+    dailyLimits = { ...DEFAULT_DAILY_LIMITS, ...changes.dailyLimits.newValue };
+    loadPlaybooks(); // re-render to update limit labels
+  }
+});
+
+// Bug 5: quota banner
+chrome.storage.local.get('meta.quota', (result) => {
+  const q = result['meta.quota'];
+  if (q && q.ratio > 0.8) {
+    showQuotaBanner(q);
+  }
+});
+
+function showQuotaBanner(q) {
+  let banner = document.getElementById('quotaBanner');
+  if (!banner) {
+    banner = document.createElement('div');
+    banner.id = 'quotaBanner';
+    banner.className = 'banner banner-warn';
+    Object.assign(banner.style, {
+      background: '#fff3cd',
+      border: '1px solid #ffc107',
+      borderRadius: '4px',
+      padding: '6px 10px',
+      fontSize: '12px',
+      marginBottom: '6px'
+    });
+    document.body.insertBefore(banner, document.body.firstChild);
+  }
+  const pct = Math.round(q.ratio * 100);
+  banner.innerHTML = '';
+  const span = document.createElement('span');
+  span.textContent = `Storage ${pct}% full (${(q.bytes / 1024 / 1024).toFixed(1)} MB of ${(q.limit / 1024 / 1024).toFixed(0)} MB). `;
+  banner.appendChild(span);
+  const link = document.createElement('a');
+  link.href = '#';
+  link.textContent = 'Export & cleanup';
+  link.addEventListener('click', (e) => { e.preventDefault(); chrome.runtime.openOptionsPage(); });
+  banner.appendChild(link);
+}
 
 // ==================== RUNNING STATE (#3) ====================
 
@@ -118,10 +178,9 @@ function loadPlaybooks() {
       action: 'getData', collection: 'activityLog', options: { limit: 0 }
     }, (logData) => {
       const todayCounts = {};
-      const today = new Date().toISOString().slice(0, 10);
       // Bug 2: sum processedCount across all outcomes (not just 'complete') to prevent stop-and-retry bypass
       for (const e of (logData?.entries || [])) {
-        if (e.timestamp?.startsWith(today)) {
+        if (isToday(e.timestamp)) {
           todayCounts[e.playbookId] = (todayCounts[e.playbookId] || 0) + (e.processedCount || 0);
         }
       }
@@ -279,13 +338,16 @@ async function runPlaybook(id, pb, btn) {
 
 // ==================== PIPELINE TAB ====================
 
+// Bug 31: cache pipeline data for 30s to avoid refetching on every tab click
+let pipelineCache = null;
+let pipelineCacheAt = 0;
+const PIPELINE_CACHE_MS = 30_000;
+
 function loadPipeline() {
-  const funnelEl = document.getElementById('pipelineFunnel');
-  const seqEl = document.getElementById('pipelineSequences');
-  const recentEl = document.getElementById('pipelineRecent');
-  funnelEl.innerHTML = '';
-  seqEl.innerHTML = '';
-  recentEl.innerHTML = '';
+  if (pipelineCache && (Date.now() - pipelineCacheAt) < PIPELINE_CACHE_MS) {
+    renderPipeline(pipelineCache);
+    return;
+  }
 
   // Gather data from multiple sources
   Promise.all([
@@ -293,7 +355,23 @@ function loadPipeline() {
     msgPromise({ action: 'getData', collection: 'outreach', options: {} }).catch(() => ({})),
     msgPromise({ action: 'getData', collection: 'activityLog', options: { limit: 500 } }).catch(() => ({})),
     msgPromise({ action: 'getSequences' }).catch(() => ({}))
-  ]).then(([contacts, outreach, activityLog, sequences]) => {
+  ]).then((data) => {
+    pipelineCache = data;
+    pipelineCacheAt = Date.now();
+    renderPipeline(data);
+  });
+}
+
+function renderPipeline(data) {
+  const [contacts, outreach, activityLog, sequences] = data;
+  const funnelEl = document.getElementById('pipelineFunnel');
+  const seqEl = document.getElementById('pipelineSequences');
+  const recentEl = document.getElementById('pipelineRecent');
+  funnelEl.innerHTML = '';
+  seqEl.innerHTML = '';
+  recentEl.innerHTML = '';
+
+  {
     // Count funnel stages
     const leads = contacts?.items ? Object.keys(contacts.items).length : 0;
     const outreachEntries = outreach?.entries || [];
@@ -380,7 +458,7 @@ function loadPipeline() {
     } else if (leads === 0 && totalContacted === 0) {
       recentEl.innerHTML = '<div class="empty">Run "Extract Leads" from a search page to start building your pipeline.</div>';
     }
-  });
+  }
 }
 
 function msgPromise(msg) {
@@ -773,9 +851,8 @@ function getTodayCount(playbookId) {
     chrome.runtime.sendMessage({
       action: 'getData', collection: 'activityLog', options: { limit: 0 }
     }, (data) => {
-      const today = new Date().toISOString().slice(0, 10);
       const total = (data?.entries || [])
-        .filter(e => e.playbookId === playbookId && e.timestamp?.startsWith(today))
+        .filter(e => e.playbookId === playbookId && isToday(e.timestamp))
         .reduce((sum, e) => sum + (e.processedCount || 0), 0);
       resolve(total);
     });

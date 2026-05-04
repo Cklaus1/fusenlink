@@ -12,10 +12,22 @@ const http = require('http');
 const { WebSocketServer, WebSocket } = require('ws');
 
 const crypto = require('crypto');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
 
 const PORT = process.env.FUSENLINK_PORT || 9333;
-// Auth token — generated on startup, printed to console. CLI must pass it.
+// Auth token — generated on startup, persisted to ~/.fusenlink/sidecar.token (mode 600).
+// If FUSENLINK_TOKEN is already set in the environment, use it as-is (no persistence).
 const AUTH_TOKEN = process.env.FUSENLINK_TOKEN || crypto.randomBytes(16).toString('hex');
+
+function persistAuthToken(token) {
+  const dir = path.join(os.homedir(), '.fusenlink');
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const file = path.join(dir, 'sidecar.token');
+  fs.writeFileSync(file, token, { mode: 0o600 });
+  return file;
+}
 
 // Track the connected extension client
 let extensionSocket = null;
@@ -61,7 +73,19 @@ wss.on('connection', (ws) => {
 
 // --- HTTP API handling ---
 
+const ALLOWED_HOSTS = new Set([
+  `localhost:${PORT}`,
+  `127.0.0.1:${PORT}`,
+  `[::1]:${PORT}`
+]);
+
 async function handleHttp(req, res) {
+  // DNS-rebinding protection — only accept connections with a localhost Host header
+  const host = (req.headers.host || '').toLowerCase();
+  if (!ALLOWED_HOSTS.has(host)) {
+    return jsonResponse(res, { error: 'Invalid Host header. Sidecar accepts only localhost connections.' }, 421);
+  }
+
   // CORS — localhost only, not wildcard
   const origin = req.headers.origin || '';
   if (origin.startsWith('http://localhost') || origin.startsWith('http://127.0.0.1')) {
@@ -249,6 +273,12 @@ server.listen(PORT, () => {
   console.log(`[fusenlink-sidecar] HTTP + WS server on port ${PORT}`);
   console.log(`  HTTP API: http://localhost:${PORT}/api/`);
   console.log(`  WS endpoint: ws://localhost:${PORT}/ws`);
-  console.log(`  Auth token: ${AUTH_TOKEN}`);
+  if (!process.env.FUSENLINK_TOKEN) {
+    const tokenFile = persistAuthToken(AUTH_TOKEN);
+    console.log(`  Auth token saved to: ${tokenFile} (mode 600)`);
+    console.log(`  Or set FUSENLINK_TOKEN env var to override.`);
+  } else {
+    console.log(`  Auth token: provided via FUSENLINK_TOKEN env var.`);
+  }
   console.log(`  Waiting for extension to connect...`);
 });

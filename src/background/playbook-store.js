@@ -23,14 +23,42 @@ function withLock(key, fn) {
 }
 
 /**
+ * Bug 35: Validate every shipped default before seeding. Returns map of
+ * id -> error string for any that fail. Used to (a) yell loudly in CI
+ * and (b) skip the bad ones at write time so a single broken default
+ * can't brick the whole install.
+ */
+function assertDefaultsValid() {
+  const errors = {};
+  for (const [id, pb] of Object.entries(DEFAULT_PLAYBOOKS)) {
+    const { valid, errors: pbErrors } = validatePlaybook(pb);
+    if (!valid) errors[id] = pbErrors.join('; ');
+  }
+  return errors;
+}
+
+/**
  * Initialize storage with defaults on first install or version upgrade.
  * Also migrates v1 settings from chrome.storage.sync to chrome.storage.local.
  * Bug 31: After first-install seed, walk DEFAULT_PLAYBOOKS and
  * DEFAULT_SELECTOR_REGISTRIES and replace stored entries whose shipped
  * version exceeds the stored version. User-modified custom playbooks
  * (IDs not in DEFAULT_PLAYBOOKS) are preserved.
+ * Bug 35: validate shipped defaults before seeding; skip any invalid ids
+ * but don't crash the install.
  */
 export async function initializeDefaults() {
+  // Bug 35: validate shipped defaults. Log loudly so CI/devs notice; on
+  // user machines we still continue and skip the bad ones below.
+  const invalidDefaults = assertDefaultsValid();
+  const invalidIds = Object.keys(invalidDefaults);
+  if (invalidIds.length > 0) {
+    console.error(
+      'FusenLink: ship defaults failed validation:',
+      invalidIds.map(id => `${id}: ${invalidDefaults[id]}`)
+    );
+  }
+
   // Migrate v1 settings from sync → local (v1 used chrome.storage.sync)
   await migrateV1Settings();
 
@@ -39,7 +67,12 @@ export async function initializeDefaults() {
       const updates = {};
 
       if (!result[STORAGE_KEYS.PLAYBOOKS]) {
-        updates[STORAGE_KEYS.PLAYBOOKS] = DEFAULT_PLAYBOOKS;
+        // Bug 35: drop any invalid defaults at seed time.
+        const seedPlaybooks = {};
+        for (const [id, pb] of Object.entries(DEFAULT_PLAYBOOKS)) {
+          if (!invalidDefaults[id]) seedPlaybooks[id] = pb;
+        }
+        updates[STORAGE_KEYS.PLAYBOOKS] = seedPlaybooks;
       }
 
       if (!result[STORAGE_KEYS.SELECTORS]) {
@@ -62,7 +95,7 @@ export async function initializeDefaults() {
   // when nothing changed; otherwise they replace stored defaults whose
   // shipped version has bumped. Bug 33: each migration appends a record
   // to meta.migrations.
-  const playbookChanges = await migrateDefaults();
+  const playbookChanges = await migrateDefaults(invalidDefaults);
   const selectorChanges = await migrateSelectors();
   if (playbookChanges.length > 0 || selectorChanges.length > 0) {
     await recordMigration({
@@ -73,17 +106,63 @@ export async function initializeDefaults() {
 }
 
 /**
- * Bug 31: Replace stored playbook defaults when shipped version is newer.
- * Returns list of migrated IDs (with new version) for migration log.
+ * Bug 4: Per-field merge between shipped and stored playbook on version
+ * bump. We replace ship-controlled fields (steps, urlPattern, name,
+ * description, buttonLabel, selectors registry key, version) with the
+ * shipped values, but PRESERVE user customizations under `settings`.
+ *
+ * For `settings`: start from shipped defaults, then overlay stored values
+ * for keys that still exist in shipped (so dead/removed setting keys are
+ * dropped rather than carried forward forever).
+ *
+ * Note on `selectors`: this is the registry KEY (e.g.
+ * 'linkedin.invitations'), not the selector data itself. Selector data
+ * lives in DEFAULT_SELECTOR_REGISTRIES and is ship-controlled — we
+ * intentionally REPLACE selector content via migrateSelectors() because
+ * users shouldn't be customizing selectors by hand.
  */
-async function migrateDefaults() {
+function mergePlaybookFields(shipped, stored) {
+  const mergedSettings = {};
+  // start with shipped defaults
+  for (const k of Object.keys(shipped.settings || {})) {
+    mergedSettings[k] = shipped.settings[k];
+  }
+  // overlay user customizations (only for keys still present in shipped)
+  for (const k of Object.keys(stored.settings || {})) {
+    if (k in (shipped.settings || {})) {
+      mergedSettings[k] = stored.settings[k];
+    }
+  }
+  return {
+    ...shipped, // steps, urlPattern, name, description, buttonLabel, selectors, version
+    settings: mergedSettings
+  };
+}
+
+// Exported for tests.
+export { mergePlaybookFields };
+
+/**
+ * Bug 31: Replace stored playbook defaults when shipped version is newer.
+ * Bug 4: Per-field merge — preserve user `settings` customizations,
+ * replace ship-controlled fields. Bug 35: skip ids whose shipped default
+ * failed validation.
+ * Returns list of migrated IDs (with new version) for migration log.
+ * @param {Object} [invalidDefaults] - map of id -> error string for ids to skip
+ */
+async function migrateDefaults(invalidDefaults = {}) {
   return withLock(STORAGE_KEYS.PLAYBOOKS, async () => {
     const stored = await getAllPlaybooks();
     const changed = [];
     for (const [id, shipped] of Object.entries(DEFAULT_PLAYBOOKS)) {
+      if (invalidDefaults[id]) continue; // Bug 35: don't write a known-broken default
       const existing = stored[id];
-      if (!existing || (shipped.version || 0) > (existing.version || 0)) {
+      if (!existing) {
         stored[id] = shipped;
+        changed.push(`${id}:v${shipped.version || 0}`);
+      } else if ((shipped.version || 0) > (existing.version || 0)) {
+        // Bug 4: merge instead of overwrite, preserving user settings tweaks.
+        stored[id] = mergePlaybookFields(shipped, existing);
         changed.push(`${id}:v${shipped.version || 0}`);
       }
     }

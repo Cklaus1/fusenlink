@@ -111,6 +111,49 @@ async function _doSync() {
 
     const remote = await response.json();
 
+    // Bug 26: validate shape of remote fields before merging. A malformed
+    // upstream JSON (e.g. `connectionMap: "oops"` or an array) would otherwise
+    // poison local storage and crash later consumers. We drop bad fields
+    // gracefully rather than aborting the whole sync.
+    if (
+      remote.connectionMap !== undefined &&
+      (typeof remote.connectionMap !== 'object' ||
+        Array.isArray(remote.connectionMap) ||
+        remote.connectionMap === null)
+    ) {
+      console.warn('Cohort sync: rejecting malformed connectionMap');
+      delete remote.connectionMap;
+    }
+    if (remote.members !== undefined && !Array.isArray(remote.members)) {
+      console.warn('Cohort sync: rejecting malformed members (expected array)');
+      delete remote.members;
+    }
+    if (
+      remote.sharedTemplates !== undefined &&
+      !Array.isArray(remote.sharedTemplates)
+    ) {
+      console.warn('Cohort sync: rejecting malformed sharedTemplates (expected array)');
+      delete remote.sharedTemplates;
+    }
+    if (
+      remote.leaderboard !== undefined &&
+      (typeof remote.leaderboard !== 'object' ||
+        Array.isArray(remote.leaderboard) ||
+        remote.leaderboard === null)
+    ) {
+      console.warn('Cohort sync: rejecting malformed leaderboard');
+      delete remote.leaderboard;
+    }
+    if (
+      remote.contentCalendar !== undefined &&
+      (typeof remote.contentCalendar !== 'object' ||
+        Array.isArray(remote.contentCalendar) ||
+        remote.contentCalendar === null)
+    ) {
+      console.warn('Cohort sync: rejecting malformed contentCalendar');
+      delete remote.contentCalendar;
+    }
+
     // Merge remote into local — remote is authoritative for shared fields.
     // Bug 23: normalize members so the merged shape is always
     // [{name, linkedin, company}] regardless of what the remote sent.

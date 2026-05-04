@@ -1,21 +1,24 @@
 /**
  * Page-side polyfill that mimics the chrome.* surfaces the content bundle
- * uses, then routes traffic through CDP's __cdpSend binding to the Node
- * shell.
+ * uses, then routes traffic through CDP's __fusenlink_cdpSend binding to the
+ * Node shell.
  *
  * This file is read as a string and evaluated in the target page BEFORE
  * dist/content.bundle.js is loaded. It exposes:
  *
- *   - chrome.runtime.sendMessage(msg, cb)  → routed to Node via __cdpSend
- *   - chrome.runtime.onMessage.addListener  → fired by window.__cdpDeliver(...)
+ *   - chrome.runtime.sendMessage(msg, cb)  → routed to Node via __fusenlink_cdpSend
+ *   - chrome.runtime.onMessage.addListener  → fired by window.__fusenlink_cdpDeliver(...)
  *   - chrome.storage.local                 → routed to Node
- *   - chrome.storage.onChanged             → fired by window.__cdpStorageChange(...)
+ *   - chrome.storage.onChanged             → fired by window.__fusenlink_cdpStorageChange(...)
  *   - chrome.alarms                        → no-op (no scheduling in shell mode)
  *
- * Bidirectional protocol over __cdpSend:
+ * Bidirectional protocol over __fusenlink_cdpSend:
  *   page → node:  { kind: 'sendMessage'|'storageGet'|...|'deliverResponse', reqId, ...payload }
- *   node → page:  window.__cdpResolve(reqId, response)  for sendMessage/storage replies
- *                 window.__cdpDeliver(msg, deliverId)   to fire onMessage handlers
+ *   node → page:  window.__fusenlink_cdpResolve(reqId, response)  for sendMessage/storage replies
+ *                 window.__fusenlink_cdpDeliver(msg, deliverId)   to fire onMessage handlers
+ *
+ * The __fusenlink_ prefix avoids collisions with hypothetical other CDP-driven
+ * extensions sharing the same browser instance.
  */
 
 (function bridge() {
@@ -40,13 +43,13 @@
     const reqId = nextReqId++;
     return new Promise((resolve) => {
       pending.set(reqId, resolve);
-      // __cdpSend is added via Runtime.addBinding by the Node shell
+      // __fusenlink_cdpSend is added via Runtime.addBinding by the Node shell
       // It accepts a single string argument
-      __cdpSend(JSON.stringify({ reqId, ...payload }));
+      __fusenlink_cdpSend(JSON.stringify({ reqId, ...payload }));
     });
   }
 
-  window.__cdpResolve = (reqId, response) => {
+  window.__fusenlink_cdpResolve = (reqId, response) => {
     const cb = pending.get(reqId);
     if (cb) {
       pending.delete(reqId);
@@ -54,19 +57,19 @@
     }
   };
 
-  // chrome.runtime.onMessage handlers — fired by Node via __cdpDeliver
+  // chrome.runtime.onMessage handlers — fired by Node via __fusenlink_cdpDeliver
   const onMessageHandlers = [];
-  window.__cdpDeliver = (msg, deliverId) => {
+  window.__fusenlink_cdpDeliver = (msg, deliverId) => {
     if (onMessageHandlers.length === 0) {
       // No handler registered yet — reply with no-op
-      __cdpSend(JSON.stringify({ kind: 'deliverResponse', deliverId, response: null }));
+      __fusenlink_cdpSend(JSON.stringify({ kind: 'deliverResponse', deliverId, response: null }));
       return;
     }
     let responded = false;
     const sendResponse = (data) => {
       if (responded) return;
       responded = true;
-      __cdpSend(JSON.stringify({ kind: 'deliverResponse', deliverId, response: data }));
+      __fusenlink_cdpSend(JSON.stringify({ kind: 'deliverResponse', deliverId, response: data }));
     };
     // Fire only the first handler that returns truthy (matching Chrome semantics:
     // multiple listeners can each handle, but we only need one response).
@@ -85,9 +88,9 @@
     if (!responded) sendResponse(null);
   };
 
-  // chrome.storage.onChanged — fired by Node via __cdpStorageChange
+  // chrome.storage.onChanged — fired by Node via __fusenlink_cdpStorageChange
   const storageListeners = [];
-  window.__cdpStorageChange = (changes, area) => {
+  window.__fusenlink_cdpStorageChange = (changes, area) => {
     for (const cb of storageListeners) {
       try { cb(changes, area); } catch (err) { console.error('[bridge] storage listener error:', err); }
     }

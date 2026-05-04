@@ -149,7 +149,7 @@ export const DEFAULT_PLAYBOOKS = {
 
   'bulk-connect': {
     id: 'bulk-connect',
-    version: 1,
+    version: 2,
     name: 'Connect All',
     description: 'Send connection requests to profiles in search results',
     urlPattern: 'linkedin\\.com/search/results/',
@@ -245,7 +245,7 @@ export const DEFAULT_PLAYBOOKS = {
 
   'ai-profile-review': {
     id: 'ai-profile-review',
-    version: 1,
+    version: 2,
     name: 'AI Profile Review',
     description: 'AI analyzes your LinkedIn profile and suggests improvements',
     urlPattern: 'linkedin\\.com/in/',
@@ -293,7 +293,7 @@ export const DEFAULT_PLAYBOOKS = {
 
   'extract-contacts': {
     id: 'extract-contacts',
-    version: 1,
+    version: 2,
     name: 'Extract Contacts',
     description: 'Scrape your recent LinkedIn connections into structured data',
     urlPattern: 'linkedin\\.com/mynetwork/invite-connect/connections/',
@@ -347,7 +347,7 @@ export const DEFAULT_PLAYBOOKS = {
 
   'send-message': {
     id: 'send-message',
-    version: 1,
+    version: 2,
     name: 'Send Message',
     description: 'Send an AI-personalized message to a profile you are viewing',
     urlPattern: 'linkedin\\.com/in/',
@@ -403,7 +403,7 @@ export const DEFAULT_PLAYBOOKS = {
 
   'search-extract': {
     id: 'search-extract',
-    version: 1,
+    version: 2,
     name: 'Extract Lead List',
     description: 'Scrape profiles from search results into a lead list (no connecting)',
     urlPattern: 'linkedin\\.com/search/results/',
@@ -460,7 +460,7 @@ export const DEFAULT_PLAYBOOKS = {
 
   'smart-outreach': {
     id: 'smart-outreach',
-    version: 1,
+    version: 2,
     name: 'Smart Outreach Sequence',
     description: 'AI-personalized 3-step message sequence to your lead list',
     urlPattern: 'linkedin\\.com/',
@@ -482,7 +482,7 @@ export const DEFAULT_PLAYBOOKS = {
 
   'warm-outreach': {
     id: 'warm-outreach',
-    version: 1,
+    version: 2,
     name: 'Warm Outreach',
     description: 'View profile + like posts + connect with AI note for each lead',
     urlPattern: 'linkedin\\.com/',
@@ -529,7 +529,7 @@ export const DEFAULT_PLAYBOOKS = {
 
   'warm-visit': {
     id: 'warm-visit',
-    version: 1,
+    version: 2,
     name: 'Warm Visit',
     description: 'Like recent posts + connect with AI note on the current profile',
     urlPattern: 'linkedin\\.com/in/',
@@ -672,7 +672,7 @@ export const DEFAULT_PLAYBOOKS = {
 
   'inbox-analysis': {
     id: 'inbox-analysis',
-    version: 1,
+    version: 2,
     name: 'Analyze Inbox',
     description: 'AI classifies and prioritizes your LinkedIn inbox',
     urlPattern: 'linkedin\\.com/messaging/',
@@ -779,7 +779,7 @@ export const DEFAULT_PLAYBOOKS = {
 
   'ai-draft-post': {
     id: 'ai-draft-post',
-    version: 1,
+    version: 2,
     name: 'AI Draft Post',
     description: 'AI writes a LinkedIn post from your topic or prompt',
     urlPattern: 'linkedin\\.com/feed/',
@@ -854,7 +854,7 @@ export const DEFAULT_PLAYBOOKS = {
 
   'ai-comment': {
     id: 'ai-comment',
-    version: 1,
+    version: 2,
     name: 'AI Comment on Posts',
     description: 'AI writes substantive comments on posts in your feed',
     urlPattern: 'linkedin\\.com/feed/',
@@ -931,7 +931,7 @@ export const DEFAULT_PLAYBOOKS = {
 
   'track-posts': {
     id: 'track-posts',
-    version: 1,
+    version: 2,
     name: 'Track My Posts',
     description: 'Capture engagement stats from your recent LinkedIn posts',
     urlPattern: 'linkedin\\.com/in/',
@@ -975,7 +975,7 @@ export const DEFAULT_PLAYBOOKS = {
 
   'cohort-engage': {
     id: 'cohort-engage',
-    version: 1,
+    version: 2,
     name: 'Cohort Engagement Pod',
     description: 'Like + AI-comment on recent posts from your accelerator cohort',
     urlPattern: 'linkedin\\.com/',
@@ -1008,7 +1008,7 @@ export const DEFAULT_PLAYBOOKS = {
 
   'cohort-repost': {
     id: 'cohort-repost',
-    version: 1,
+    version: 2,
     name: 'Mega-Post Repost',
     description: 'Repost a cohort member\'s top post to amplify their reach',
     urlPattern: 'linkedin\\.com/feed/',

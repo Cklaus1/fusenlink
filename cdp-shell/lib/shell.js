@@ -71,8 +71,13 @@ async function readFile(p) {
 }
 
 /**
- * Wrap the bundle source so it only runs in the top-level LinkedIn frame and
- * has a usable document.currentScript shim for webpack's auto publicPath.
+ * Wrap the bundle source so it only runs in the top-level LinkedIn frame.
+ *
+ * Defense-in-depth document.currentScript shim: webpack's auto-detection of
+ * publicPath used to require this. We now build with `output.publicPath: ''`
+ * which disables that auto-detection, so the shim should be unnecessary for
+ * fresh bundles. We keep it for backward compatibility with older bundles
+ * that might still hit the codepath that reads document.currentScript.
  */
 function buildWrappedBundle(bundle) {
   return `
@@ -83,6 +88,8 @@ function buildWrappedBundle(bundle) {
         // same-origin LinkedIn iframe — skip; only the top frame hosts the engine
       } else {
         if (!document.currentScript) {
+          // Defense-in-depth: webpack 5 with publicPath '' should not need this,
+          // but older builds did, so keep the shim for compatibility.
           try {
             Object.defineProperty(document, 'currentScript', {
               value: {
@@ -101,14 +108,16 @@ function buildWrappedBundle(bundle) {
 }
 
 /**
- * Set up routing between the page (via __cdpSend binding) and the Node router.
+ * Set up routing between the page (via __fusenlink_cdpSend binding) and the
+ * Node router.
  *
  * Page-side messages travel as JSON-encoded strings:
  *   { reqId, kind: 'sendMessage'|'storageGet'|'storageSet'|'storageRemove'|'deliverResponse', ... }
  *
- * Node-side responses to those calls go through window.__cdpResolve(reqId, response).
- * Node-pushed onMessage deliveries go through window.__cdpDeliver(msg, deliverId)
- * and the page replies with kind: 'deliverResponse'.
+ * Node-side responses to those calls go through
+ * window.__fusenlink_cdpResolve(reqId, response). Node-pushed onMessage
+ * deliveries go through window.__fusenlink_cdpDeliver(msg, deliverId) and the
+ * page replies with kind: 'deliverResponse'.
  *
  * Returns { deliver, attach(client) } — `attach(client)` rebinds the listeners
  * to a new CDP client (used by the auto-reattach path). Pending deliveries are
@@ -127,7 +136,7 @@ function createRouter() {
   const storageChangeListener = async (changes, area) => {
     try {
       await evaluate(
-        `window.__cdpStorageChange && window.__cdpStorageChange(${JSON.stringify(changes)}, ${JSON.stringify(area)})`
+        `window.__fusenlink_cdpStorageChange && window.__fusenlink_cdpStorageChange(${JSON.stringify(changes)}, ${JSON.stringify(area)})`
       );
     } catch { /* page closed or not yet ready — ignore */ }
   };
@@ -138,7 +147,7 @@ function createRouter() {
     currentRuntime = Runtime;
 
     client.on('Runtime.bindingCalled', async ({ name, payload }) => {
-      if (name !== '__cdpSend') return;
+      if (name !== '__fusenlink_cdpSend') return;
 
       let parsed;
       try {
@@ -158,7 +167,7 @@ function createRouter() {
         if (kind === 'sendMessage') {
           const response = await route(parsed.msg);
           await Runtime.evaluate({
-            expression: `window.__cdpResolve(${reqId}, ${JSON.stringify(response ?? null)})`
+            expression: `window.__fusenlink_cdpResolve(${reqId}, ${JSON.stringify(response ?? null)})`
           });
           return;
         }
@@ -166,20 +175,20 @@ function createRouter() {
         if (kind === 'storageGet') {
           const result = await new Promise((resolve) => storageApi.local.get(parsed.keys, resolve));
           await Runtime.evaluate({
-            expression: `window.__cdpResolve(${reqId}, ${JSON.stringify(result)})`
+            expression: `window.__fusenlink_cdpResolve(${reqId}, ${JSON.stringify(result)})`
           });
           return;
         }
 
         if (kind === 'storageSet') {
           await new Promise((resolve) => storageApi.local.set(parsed.items, resolve));
-          await Runtime.evaluate({ expression: `window.__cdpResolve(${reqId}, null)` });
+          await Runtime.evaluate({ expression: `window.__fusenlink_cdpResolve(${reqId}, null)` });
           return;
         }
 
         if (kind === 'storageRemove') {
           await new Promise((resolve) => storageApi.local.remove(parsed.keys, resolve));
-          await Runtime.evaluate({ expression: `window.__cdpResolve(${reqId}, null)` });
+          await Runtime.evaluate({ expression: `window.__fusenlink_cdpResolve(${reqId}, null)` });
           return;
         }
 
@@ -201,7 +210,7 @@ function createRouter() {
         }
         try {
           await Runtime.evaluate({
-            expression: `window.__cdpResolve(${reqId}, ${JSON.stringify({ error: err.message })})`
+            expression: `window.__fusenlink_cdpResolve(${reqId}, ${JSON.stringify({ error: err.message })})`
           });
         } catch { /* page may have navigated */ }
       }
@@ -230,7 +239,7 @@ function createRouter() {
         resolve(response);
       });
 
-      evaluate(`window.__cdpDeliver(${JSON.stringify(msg)}, ${deliverId})`).catch((err) => {
+      evaluate(`window.__fusenlink_cdpDeliver(${JSON.stringify(msg)}, ${deliverId})`).catch((err) => {
         if (pendingDeliveries.has(deliverId)) {
           pendingDeliveries.delete(deliverId);
           clearTimeout(timer);
@@ -280,7 +289,13 @@ export async function connect(opts = {}) {
     wrappedBundle: null,
     client: null,
     target: null,
-    reconnecting: false
+    reconnecting: false,
+    // IDs returned by Page.addScriptToEvaluateOnNewDocument. We remove these
+    // before re-registering on a reattach so the bridge + bundle don't pile up
+    // (every reattach used to register another copy → 10 reattaches = bundle
+    // running 10 times per page load). Per-session so multiple sessions sharing
+    // a process don't clobber each other.
+    registeredScriptIds: []
   };
 
   dbg('reading bridge + bundle from disk');
@@ -318,15 +333,27 @@ export async function connect(opts = {}) {
 
     // Expose the page→node binding (must be re-added on every fresh client).
     dbg('addBinding');
-    await Runtime.addBinding({ name: '__cdpSend' });
+    await Runtime.addBinding({ name: '__fusenlink_cdpSend' });
 
     // Wire (or re-wire) the router to this client.
     router.attach(client);
 
     if (state.persist) {
+      // Remove any previously registered persistent scripts. Without this,
+      // every reattach piles on another copy — after N reattaches, the bridge
+      // and bundle run N+1 times on every page load.
+      for (const id of state.registeredScriptIds) {
+        try {
+          await Page.removeScriptToEvaluateOnNewDocument({ identifier: id });
+        } catch { /* ok if already gone (e.g. fresh target) */ }
+      }
+      state.registeredScriptIds = [];
+
       dbg('addScriptToEvaluateOnNewDocument (bridge+bundle persistent)');
-      await Page.addScriptToEvaluateOnNewDocument({ source: state.bridge });
-      await Page.addScriptToEvaluateOnNewDocument({ source: state.wrappedBundle });
+      const r1 = await Page.addScriptToEvaluateOnNewDocument({ source: state.bridge });
+      state.registeredScriptIds.push(r1.identifier);
+      const r2 = await Page.addScriptToEvaluateOnNewDocument({ source: state.wrappedBundle });
+      state.registeredScriptIds.push(r2.identifier);
     }
 
     dbg('inject bridge (current document)');

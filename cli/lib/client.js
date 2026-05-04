@@ -5,7 +5,13 @@
 const http = require('http');
 
 const BASE_URL = process.env.FUSENLINK_URL || 'http://localhost:9333';
-const AUTH_TOKEN = process.env.FUSENLINK_TOKEN || '';
+const tokenFromFile = (() => {
+  try {
+    const f = require('path').join(require('os').homedir(), '.fusenlink', 'sidecar.token');
+    return require('fs').readFileSync(f, 'utf8').trim();
+  } catch { return null; }
+})();
+const AUTH_TOKEN = process.env.FUSENLINK_TOKEN || tokenFromFile || '';
 
 /**
  * Make an HTTP request to the sidecar.

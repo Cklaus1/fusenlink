@@ -51,12 +51,20 @@ export class SelectorResolver {
    * Install a MutationObserver on document.body to invalidate the shadow root
    * cache when direct body children change (covers modal open/close events).
    * Fixes bug #25: 500ms cache window left stale shadow root refs after modals.
+   * Fixes bug #13: debounced 250ms trailing-edge to avoid thrashing on feed pages
+   * that mutate body children at high frequency (auto-loading new cards).
    */
   _installCacheInvalidator() {
     if (typeof MutationObserver === 'undefined') return; // jsdom may lack it
-    this._mutationObserver = new MutationObserver(() => {
-      this.invalidateCache();
-    });
+    this._debouncePending = null;
+    const debounced = () => {
+      if (this._debouncePending) return;
+      this._debouncePending = setTimeout(() => {
+        this._debouncePending = null;
+        this.invalidateCache();
+      }, 250);
+    };
+    this._mutationObserver = new MutationObserver(debounced);
     const observeBody = () => {
       try {
         this._mutationObserver.observe(document.body, {
@@ -79,6 +87,10 @@ export class SelectorResolver {
    * Call when the resolver is no longer needed to avoid leaks.
    */
   dispose() {
+    if (this._debouncePending) {
+      clearTimeout(this._debouncePending);
+      this._debouncePending = null;
+    }
     if (this._mutationObserver) {
       this._mutationObserver.disconnect();
       this._mutationObserver = null;

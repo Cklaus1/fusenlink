@@ -20,12 +20,14 @@ const T = {
   NULL: 'NULL',
   UNDEFINED: 'UNDEF',
   VAR: 'VAR',
+  IDENT: 'IDENT',
   OP: 'OP',
   UNARY: 'UNARY',
   LPAREN: '(',
   RPAREN: ')',
   LBRACK: '[',
   RBRACK: ']',
+  DOT: '.',
   QUESTION: '?',
   COLON: ':',
   EOF: 'EOF'
@@ -115,10 +117,22 @@ function tokenize(expr) {
 
     // Variable ($name.path) or keyword (true/false/null/undefined)
     if (ch === '$' || /[a-zA-Z_]/.test(ch)) {
+      const isVar = ch === '$';
       let name = '';
-      while (i < expr.length && /[\w.$]/.test(expr[i])) {
-        name += expr[i];
-        i++;
+      // Variables (starting with $) keep the dotted path syntax for back-
+      // compat with resolveVarPath ($settings.delayMs). Identifiers without
+      // a leading $ stop at the first non-word char so a trailing `.member`
+      // becomes a separate DOT token + member ident (Bug 10).
+      if (isVar) {
+        while (i < expr.length && /[\w.$]/.test(expr[i])) {
+          name += expr[i];
+          i++;
+        }
+      } else {
+        while (i < expr.length && /[\w$]/.test(expr[i])) {
+          name += expr[i];
+          i++;
+        }
       }
 
       if (name === 'true') { tokens.push({ type: T.BOOL, value: true }); continue; }
@@ -126,7 +140,15 @@ function tokenize(expr) {
       if (name === 'null') { tokens.push({ type: T.NULL, value: null }); continue; }
       if (name === 'undefined') { tokens.push({ type: T.UNDEFINED, value: undefined }); continue; }
 
-      tokens.push({ type: T.VAR, value: name });
+      tokens.push({ type: isVar ? T.VAR : T.IDENT, value: name });
+      continue;
+    }
+
+    // Standalone '.' — member access (Bug 10). Numbers are handled in the
+    // numeric branch above, so reaching here means a member-access dot.
+    if (ch === '.') {
+      tokens.push({ type: T.DOT, value: '.' });
+      i++;
       continue;
     }
 
@@ -249,59 +271,70 @@ class Parser {
   parsePrimary() {
     const tok = this.peek();
 
-    if (tok.type === T.NUMBER) { this.advance(); return { type: 'literal', value: tok.value }; }
-    if (tok.type === T.STRING) { this.advance(); return { type: 'literal', value: tok.value }; }
-    if (tok.type === T.BOOL) { this.advance(); return { type: 'literal', value: tok.value }; }
-    if (tok.type === T.NULL) { this.advance(); return { type: 'literal', value: null }; }
-    if (tok.type === T.UNDEFINED) { this.advance(); return { type: 'literal', value: undefined }; }
-
-    if (tok.type === T.VAR) {
+    let base;
+    if (tok.type === T.NUMBER) { this.advance(); base = { type: 'literal', value: tok.value }; }
+    else if (tok.type === T.STRING) { this.advance(); base = { type: 'literal', value: tok.value }; }
+    else if (tok.type === T.BOOL) { this.advance(); base = { type: 'literal', value: tok.value }; }
+    else if (tok.type === T.NULL) { this.advance(); base = { type: 'literal', value: null }; }
+    else if (tok.type === T.UNDEFINED) { this.advance(); base = { type: 'literal', value: undefined }; }
+    else if (tok.type === T.VAR) {
       this.advance();
-      let node = { type: 'var', name: tok.value };
-      // Bug 26: support bracket indexing on variables, e.g. $contacts[0],
-      // $items[$i], $row['name']. Chains naturally via this loop.
-      // Also support trailing .member access after an index, e.g.
-      // $contacts[0].seen — the tokenizer doesn't carry `.foo` into the
-      // var name once we've started indexing, so handle it here.
-      while (true) {
-        if (this.peek().type === T.LBRACK) {
-          this.advance(); // eat [
-          const key = this.parseTernary();
-          if (this.peek().type !== T.RBRACK) {
-            throw new Error(`Expected ']' in index expression, got ${this.peek().type} (${this.peek().value})`);
-          }
-          this.advance(); // eat ]
-          node = { type: 'index', obj: node, key };
-          continue;
-        }
-        // Trailing .foo.bar after a bracket: tokenizer emits the leading
-        // '.' as an unrecognized character (warning + skip) followed by a
-        // VAR for the rest. We detect a VAR immediately after an index
-        // and treat it as a member-path access.
-        if (node.type === 'index' && this.peek().type === T.VAR) {
-          const memberTok = this.advance();
-          // memberTok.value may be 'seen' or 'a.b.c'. Build chained index
-          // nodes with string keys for each segment so resolveVarPath
-          // doesn't mishandle the leading dot.
-          const segments = memberTok.value.replace(/^\$/, '').split('.').filter(Boolean);
-          for (const seg of segments) {
-            node = { type: 'index', obj: node, key: { type: 'literal', value: seg } };
-          }
-          continue;
-        }
-        break;
-      }
-      return node;
+      base = { type: 'var', name: tok.value };
     }
-
-    if (tok.type === T.LPAREN) {
+    else if (tok.type === T.IDENT) {
+      // Bare identifiers (no $) — resolved via the same var lookup so
+      // `vars.length`-style access still works.
+      this.advance();
+      base = { type: 'var', name: tok.value };
+    }
+    else if (tok.type === T.LPAREN) {
       this.advance(); // eat (
-      const inner = this.parseTernary();
+      base = this.parseTernary();
       this.eat(T.RPAREN); // eat )
-      return inner;
+    }
+    else {
+      throw new Error(`Unexpected token: ${tok.type} (${tok.value})`);
     }
 
-    throw new Error(`Unexpected token: ${tok.type} (${tok.value})`);
+    return this.parsePostfix(base);
+  }
+
+  // Bug 10: handle a chain of `[expr]` index accesses and `.member` member
+  // accesses after any base expression (variable, parenthesized, etc.).
+  // This is shared so e.g. `($foo)[0].name` parses the same as `$foo[0].name`.
+  parsePostfix(node) {
+    while (true) {
+      const tok = this.peek();
+      if (tok.type === T.LBRACK) {
+        this.advance(); // eat [
+        const key = this.parseTernary();
+        if (this.peek().type !== T.RBRACK) {
+          throw new Error(`Expected ']' in index expression, got ${this.peek().type} (${this.peek().value})`);
+        }
+        this.advance(); // eat ]
+        node = { type: 'index', obj: node, key };
+        continue;
+      }
+      if (tok.type === T.DOT) {
+        this.advance(); // eat .
+        const member = this.peek();
+        if (member.type !== T.VAR && member.type !== T.IDENT) {
+          throw new Error(`Expected member name after '.', got ${member.type} (${member.value})`);
+        }
+        this.advance();
+        const name = String(member.value).replace(/^\$/, '');
+        // member.value may itself contain dotted segments if the tokenizer
+        // produced a VAR like `$foo.bar`. Split so each segment is its own
+        // member node.
+        const segments = name.split('.').filter(Boolean);
+        for (const seg of segments) {
+          node = { type: 'member', obj: node, name: seg };
+        }
+        continue;
+      }
+      break;
+    }
+    return node;
   }
 }
 
@@ -343,6 +376,13 @@ function evalNode(node, vars) {
       if (obj == null) return undefined;
       const key = evalNode(node.key, vars);
       return obj[key];
+    }
+    case 'member': {
+      // Bug 10: $obj.name member access. Null-safe so `$x.y` returns
+      // undefined when x is null/undefined rather than throwing.
+      const obj = evalNode(node.obj, vars);
+      if (obj == null) return undefined;
+      return obj[node.name];
     }
     case 'ternary':
       return evalNode(node.test, vars) ? evalNode(node.cons, vars) : evalNode(node.alt, vars);

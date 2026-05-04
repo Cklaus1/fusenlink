@@ -38,13 +38,13 @@ client.on('Runtime.exceptionThrown', (e) => {
   console.log('[page error]', e.exceptionDetails.text);
 });
 
-await Runtime.addBinding({ name: '__cdpSend' });
+await Runtime.addBinding({ name: '__fusenlink_cdpSend' });
 
 const pendingDelivers = new Map();
 let nextDeliver = 1;
 
 client.on('Runtime.bindingCalled', async ({ name, payload }) => {
-  if (name !== '__cdpSend') return;
+  if (name !== '__fusenlink_cdpSend') return;
   let parsed;
   try { parsed = JSON.parse(payload); } catch { return; }
   const { reqId, kind } = parsed;
@@ -70,7 +70,7 @@ client.on('Runtime.bindingCalled', async ({ name, payload }) => {
   }
 
   await Runtime.evaluate({
-    expression: `window.__cdpResolve(${reqId}, ${JSON.stringify(response ?? null)})`
+    expression: `window.__fusenlink_cdpResolve(${reqId}, ${JSON.stringify(response ?? null)})`
   }).catch(() => {});
 });
 
@@ -91,7 +91,7 @@ function deliver(msg) {
   return new Promise((resolve) => {
     pendingDelivers.set(id, resolve);
     Runtime.evaluate({
-      expression: `window.__cdpDeliver(${JSON.stringify(msg)}, ${id})`
+      expression: `window.__fusenlink_cdpDeliver(${JSON.stringify(msg)}, ${id})`
     });
     setTimeout(() => {
       if (pendingDelivers.has(id)) { pendingDelivers.delete(id); resolve({ error: 'timeout' }); }

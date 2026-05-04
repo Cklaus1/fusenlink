@@ -69,9 +69,15 @@ async function main() {
           console.log(JSON.stringify(result, null, 2));
         } else if (subCmd === 'set') {
           const playbookId = args[1];
-          const interval = parseInt(args[2], 10);
-          if (!playbookId || !interval) {
-            console.error('Usage: fusenlink schedule set <playbook-id> <interval-minutes>');
+          const intervalRaw = args[2];
+          if (!playbookId || !intervalRaw || !/^\d+$/.test(intervalRaw)) {
+            console.error('Usage: fusenlink schedule set <playbook-id> <interval-minutes-as-integer>');
+            console.error('  e.g.: fusenlink schedule set accept-invites 60');
+            process.exit(1);
+          }
+          const interval = parseInt(intervalRaw, 10);
+          if (interval < 1 || interval > 10080) {
+            console.error('Interval must be between 1 and 10080 minutes (1 week).');
             process.exit(1);
           }
           const result = await client.post('/api/schedule', {
@@ -94,19 +100,25 @@ async function main() {
       case 'data': {
         const collection = args[0];
         if (!collection) {
-          console.error('Usage: fusenlink data <collection> [--format csv] [--limit N]');
+          console.error('Usage: fusenlink data <collection> [--full] [--format csv]');
           console.error('Collections: contacts, inbox, outreach, profileReviews, activityLog');
+          console.error('  --full    Dump all records (may be large)');
           process.exit(1);
         }
-        const format = args.includes('--format') ? args[args.indexOf('--format') + 1] : 'json';
-        const limitIdx = args.indexOf('--limit');
-        const limit = limitIdx >= 0 ? args[limitIdx + 1] : '';
-        let path = `/api/data/${collection}?format=${format}`;
-        if (limit) path += `&limit=${limit}`;
-        const result = await client.get(path);
+        const isFull = args.includes('--full');
+        const formatIdx = args.indexOf('--format');
+        const format = formatIdx >= 0 ? args[formatIdx + 1] : 'json';
+        const limit = isFull ? 0 : 10;
 
-        if (format === 'csv' && result.csv) {
-          console.log(result.csv);
+        let apiPath = `/api/data/${collection}?format=${format}&limit=${limit}`;
+        const result = await client.get(apiPath);
+
+        if (!isFull) {
+          const itemCount = result?.items ? Object.keys(result.items).length : (result?.entries?.length || 0);
+          console.log(`Showing first ${Math.min(limit, itemCount)} of ${itemCount} items. Use --full for complete data.`);
+        }
+        if (format === 'csv' && result?.csv) {
+          process.stdout.write(result.csv);
         } else {
           console.log(JSON.stringify(result, null, 2));
         }

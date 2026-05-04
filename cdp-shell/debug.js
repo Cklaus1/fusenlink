@@ -22,9 +22,9 @@ client.on('Runtime.exceptionThrown', (e) => {
   console.log('[page error]', e.exceptionDetails.text, e.exceptionDetails.exception?.description?.slice(0, 200));
 });
 
-await Runtime.addBinding({ name: '__cdpSend' });
+await Runtime.addBinding({ name: '__fusenlink_cdpSend' });
 client.on('Runtime.bindingCalled', (e) => {
-  if (e.name === '__cdpSend') {
+  if (e.name === '__fusenlink_cdpSend') {
     const p = e.payload.slice(0, 200);
     console.log('[binding →]', p);
   }
@@ -37,7 +37,7 @@ console.log('--- inject bridge ---');
 const r1 = await Runtime.evaluate({ expression: bridge });
 if (r1.exceptionDetails) console.log('bridge exception:', r1.exceptionDetails.text);
 
-const r2 = await Runtime.evaluate({ expression: 'typeof __cdpSend + " | chrome.runtime: " + typeof chrome.runtime.sendMessage', returnByValue: true });
+const r2 = await Runtime.evaluate({ expression: 'typeof __fusenlink_cdpSend + " | chrome.runtime: " + typeof chrome.runtime.sendMessage', returnByValue: true });
 console.log('polyfill present:', r2.result.value);
 
 console.log('--- inject bundle ---');
@@ -50,7 +50,7 @@ if (r3.exceptionDetails) {
 await new Promise(r => setTimeout(r, 2500));
 
 const r4 = await Runtime.evaluate({
-  expression: 'JSON.stringify({ bridge: !!window.__fusenlinkBridgeInstalled, ready: window.__cdpReady, deliverFn: typeof window.__cdpDeliver, chromeKeys: Object.keys(chrome || {}).join(",") })',
+  expression: 'JSON.stringify({ bridge: !!window.__fusenlinkBridgeInstalled, ready: window.__cdpReady, deliverFn: typeof window.__fusenlink_cdpDeliver, chromeKeys: Object.keys(chrome || {}).join(",") })',
   returnByValue: true
 });
 console.log('post-bundle state:', r4.result.value);
@@ -59,7 +59,7 @@ console.log('--- attempting deliver getPlaybookStatus ---');
 const r5 = await Runtime.evaluate({
   expression: `(function() {
     let resolved = null;
-    window.__cdpDeliver({type: 'getPlaybookStatus'}, 9999);
+    window.__fusenlink_cdpDeliver({type: 'getPlaybookStatus'}, 9999);
     return 'delivered';
   })()`,
   returnByValue: true

@@ -15,8 +15,9 @@ import { STORAGE_KEYS, DEFAULT_AI_CONFIG } from '../shared/constants.js';
 let cachedConfig = null;
 let configLoading = null; // Prevent concurrent loads
 
-// Bug 13: Track in-flight AbortControllers so saveConfig() can cancel stale requests.
-const inFlightControllers = new Set();
+// Bug 18: Track in-flight controllers tagged with provider/baseUrl so saveConfig()
+// only cancels requests issued under a different provider/baseUrl.
+const inFlightControllers = new Set(); // Set<{controller, provider, baseUrl}>
 
 const MAX_RETRIES = 2;
 const RETRY_BASE_MS = 1000;
@@ -74,16 +75,21 @@ async function getConfig() {
 
 /**
  * Save AI config to storage.
- * Bug 13: Aborts all in-flight requests so they don't return stale-provider data.
+ * Bug 18: Only abort controllers issued under a different provider/baseUrl,
+ * so unrelated parallel requests on the same provider continue unaffected.
  * @param {Object} config
  * @returns {Promise<void>}
  */
 export async function saveConfig(config) {
-  // Abort any in-flight requests so they don't return stale-provider data
-  for (const c of inFlightControllers) {
-    try { c.abort(); } catch {}
+  const newProvider = config.provider;
+  const newBaseUrl = config.baseUrl;
+  // Abort only controllers issued against a different provider/baseUrl
+  for (const entry of inFlightControllers) {
+    if (entry.provider !== newProvider || entry.baseUrl !== newBaseUrl) {
+      try { entry.controller.abort(); } catch {}
+      inFlightControllers.delete(entry);
+    }
   }
-  inFlightControllers.clear();
   cachedConfig = { ...DEFAULT_AI_CONFIG, ...config };
   configLoading = null;
   return new Promise((resolve) => {
@@ -191,21 +197,31 @@ export async function chat(params) {
     return { content: '', error: 'Invalid baseUrl — must be HTTPS (or localhost HTTP)' };
   }
 
-  // Use explicit provider field, not URL pattern matching
-  const isAnthropic = config.provider === 'anthropic';
-
   let lastError;
+  let abortRetried = false;
+
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    // Bug 19: Re-read config each attempt so an abort caused by saveConfig picks
+    // up the new provider config on the retry.
+    const currentConfig = await getConfig();
+    const isAnthropic = currentConfig.provider === 'anthropic';
+
     try {
       const response = isAnthropic
-        ? await fetchAnthropic(config, messages, body)
-        : await fetchOpenAICompat(config, body);
+        ? await fetchAnthropic(currentConfig, messages, body)
+        : await fetchOpenAICompat(currentConfig, body);
       return response;
     } catch (err) {
       lastError = err;
-      // Abort errors (from timeout or saveConfig) must not be retried
-      const isAbort = err.name === 'AbortError' || err.message?.toLowerCase().includes('aborted');
-      const isRetryable = !isAbort && err.retryable === true;
+      const isAbort = err.name === 'AbortError' || /aborted/i.test(err.message || '');
+      // Bug 19: If aborted (likely by saveConfig), retry once on the new config.
+      if (isAbort && !abortRetried) {
+        abortRetried = true;
+        // Wait for in-flight saveConfig to settle, then retry
+        await new Promise(r => setTimeout(r, 100));
+        continue;
+      }
+      const isRetryable = err.retryable === true;
       if (!isRetryable || attempt === MAX_RETRIES) break;
       await new Promise(r => setTimeout(r, RETRY_BASE_MS * Math.pow(2, attempt)));
     }
@@ -219,6 +235,25 @@ export async function chat(params) {
 }
 
 /**
+ * Bug 32: Extract the most meaningful error message from a provider error response body.
+ * Handles common shapes: {error: "string"}, {error: {message}}, {error: {error_description}},
+ * {error: {detail}}, {detail}, {message}.
+ * @param {*} data
+ * @returns {string}
+ */
+function extractProviderErrorMessage(data) {
+  if (!data) return 'Unknown provider error';
+  if (typeof data === 'string') return data;
+  if (typeof data.error === 'string') return data.error;
+  if (data.error?.message) return data.error.message;
+  if (data.error?.error_description) return data.error.error_description;
+  if (data.error?.detail) return data.error.detail;
+  if (data.detail) return data.detail;
+  if (data.message) return data.message;
+  return JSON.stringify(data).slice(0, 200);
+}
+
+/**
  * Fetch from OpenAI-compatible endpoint.
  */
 const FETCH_TIMEOUT_MS = 30000;
@@ -229,9 +264,11 @@ async function fetchOpenAICompat(config, body) {
     headers['Authorization'] = `Bearer ${config.apiKey}`;
   }
 
-  // Bug 13: Register controller so saveConfig() can abort in-flight requests.
+  // Bug 18: Register controller tagged with provider/baseUrl so saveConfig() only
+  // aborts requests issued under a different provider/baseUrl.
   const controller = new AbortController();
-  inFlightControllers.add(controller);
+  const entry = { controller, provider: config.provider, baseUrl: config.baseUrl };
+  inFlightControllers.add(entry);
   const timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
 
   let response;
@@ -244,7 +281,7 @@ async function fetchOpenAICompat(config, body) {
     });
   } finally {
     clearTimeout(timeout);
-    inFlightControllers.delete(controller);
+    inFlightControllers.delete(entry);
   }
 
   if (!response.ok) {
@@ -266,9 +303,9 @@ async function fetchOpenAICompat(config, body) {
 
   const data = await response.json();
 
-  // Bug 5: HTTP 200 with embedded error body (e.g. OpenRouter "Insufficient credits").
+  // Bug 5 / Bug 32: HTTP 200 with embedded error body (e.g. OpenRouter "Insufficient credits").
   if (data.error) {
-    const msg = typeof data.error === 'string' ? data.error : (data.error.message || JSON.stringify(data.error).slice(0, 200));
+    const msg = extractProviderErrorMessage(data);
     const err = new Error(`Provider returned error: ${msg}`);
     err.retryable = false; // body errors are usually permanent
     err.bodyDetail = JSON.stringify(data.error).slice(0, 500);
@@ -305,9 +342,11 @@ async function fetchAnthropic(config, messages, body) {
     }))
   };
 
-  // Bug 13: Register controller so saveConfig() can abort in-flight requests.
+  // Bug 18: Register controller tagged with provider/baseUrl so saveConfig() only
+  // aborts requests issued under a different provider/baseUrl.
   const controller = new AbortController();
-  inFlightControllers.add(controller);
+  const entry = { controller, provider: config.provider, baseUrl: config.baseUrl };
+  inFlightControllers.add(entry);
   const timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
 
   let response;
@@ -324,7 +363,7 @@ async function fetchAnthropic(config, messages, body) {
     });
   } finally {
     clearTimeout(timeout);
-    inFlightControllers.delete(controller);
+    inFlightControllers.delete(entry);
   }
 
   if (!response.ok) {
@@ -346,9 +385,9 @@ async function fetchAnthropic(config, messages, body) {
 
   const data = await response.json();
 
-  // Bug 5: Anthropic native API uses {error: {type, message}} shape on HTTP 200 edge cases.
+  // Bug 5 / Bug 32: Anthropic native API uses {error: {type, message}} shape on HTTP 200 edge cases.
   if (data.error) {
-    const msg = typeof data.error === 'string' ? data.error : (data.error.message || JSON.stringify(data.error).slice(0, 200));
+    const msg = extractProviderErrorMessage(data);
     const err = new Error(`Provider returned error: ${msg}`);
     err.retryable = false;
     err.bodyDetail = JSON.stringify(data.error).slice(0, 500);

@@ -3,23 +3,25 @@
  */
 import { chat, saveConfig } from '../src/background/ai-client.js';
 
-beforeEach(() => {
+const OLLAMA_CONFIG = {
+  provider: 'ollama',
+  baseUrl: 'http://localhost:11434/v1',
+  apiKey: '',
+  model: 'llama3.1:8b',
+  maxTokens: 512
+};
+
+beforeEach(async () => {
   jest.clearAllMocks();
   // Provide a default AI config (localhost Ollama — valid base URL)
   chrome.storage.local.get.mockImplementation((keys, callback) => {
-    callback({
-      ai: {
-        provider: 'ollama',
-        baseUrl: 'http://localhost:11434/v1',
-        apiKey: '',
-        model: 'llama3.1:8b',
-        maxTokens: 512
-      }
-    });
+    callback({ ai: OLLAMA_CONFIG });
   });
   chrome.storage.local.set.mockImplementation((items, callback) => {
     if (callback) callback();
   });
+  // Reset module-level cachedConfig so each test starts with a clean config read
+  await saveConfig(OLLAMA_CONFIG);
 });
 
 describe('chat() error path', () => {
@@ -139,24 +141,30 @@ describe('Bug 5 — HTTP 200 with embedded error', () => {
   });
 });
 
-// Bug 13: saveConfig aborts in-flight requests
-describe('Bug 13 — saveConfig aborts in-flight requests', () => {
-  test('fetch signal is aborted when saveConfig is called while fetch is pending', async () => {
+// Bug 18: saveConfig only aborts controllers issued under a different provider/baseUrl
+describe('Bug 18 — saveConfig selective abort', () => {
+  test('saveConfig with different provider aborts the in-flight request', async () => {
+    let callCount = 0;
     let capturedSignal;
 
-    // A fetch that captures its signal and rejects when the abort signal fires
+    // First call hangs until aborted; second call (retry after abort) rejects immediately
     global.fetch = jest.fn().mockImplementation((_url, opts) => {
-      capturedSignal = opts.signal;
-      return new Promise((_resolve, reject) => {
-        opts.signal.addEventListener('abort', () => {
-          const abortErr = new Error('The operation was aborted.');
-          abortErr.name = 'AbortError';
-          reject(abortErr);
+      callCount++;
+      if (callCount === 1) {
+        capturedSignal = opts.signal;
+        return new Promise((_resolve, reject) => {
+          opts.signal.addEventListener('abort', () => {
+            const abortErr = new Error('The operation was aborted.');
+            abortErr.name = 'AbortError';
+            reject(abortErr);
+          });
         });
-      });
+      }
+      // Retry call: reject immediately so chatPromise resolves
+      return Promise.reject(new Error('Network failure on retry'));
     });
 
-    // Kick off chat — don't await (it will hang until aborted)
+    // Kick off chat against ollama — don't await (it will hang until aborted)
     const chatPromise = chat({ userMessage: 'hello' });
 
     // Give the event loop ticks so fetch() is actually called
@@ -165,7 +173,54 @@ describe('Bug 13 — saveConfig aborts in-flight requests', () => {
     expect(capturedSignal).toBeDefined();
     expect(capturedSignal.aborted).toBe(false);
 
-    // Calling saveConfig should abort all in-flight controllers
+    // Calling saveConfig with a DIFFERENT provider should abort the in-flight request
+    await saveConfig({
+      provider: 'openai',
+      baseUrl: 'https://api.openai.com/v1',
+      apiKey: 'sk-test',
+      model: 'gpt-4o',
+      maxTokens: 512
+    });
+
+    expect(capturedSignal.aborted).toBe(true);
+
+    // chatPromise: Bug 19 retries once with new config → second fetch rejects → resolves with error
+    const result = await chatPromise;
+    expect(result.error).toBeDefined();
+  }, 10000);
+
+  test('saveConfig with same provider and baseUrl does NOT abort in-flight request', async () => {
+    let capturedSignal;
+    let resolveHangingFetch;
+
+    // A fetch that hangs until we manually resolve it
+    global.fetch = jest.fn().mockImplementation((_url, opts) => {
+      capturedSignal = opts.signal;
+      return new Promise((resolve) => {
+        resolveHangingFetch = () => resolve({
+          ok: true,
+          headers: { get: () => null },
+          json: async () => ({
+            choices: [{ message: { content: 'done' } }],
+            usage: { prompt_tokens: 5, completion_tokens: 3 }
+          })
+        });
+        // Also listen for abort so we can detect it
+        opts.signal.addEventListener('abort', () => {
+          // Don't reject — just record that abort was fired
+        });
+      });
+    });
+
+    // Kick off chat against ollama
+    const chatPromise = chat({ userMessage: 'hello' });
+
+    await new Promise(r => setTimeout(r, 20));
+
+    expect(capturedSignal).toBeDefined();
+    expect(capturedSignal.aborted).toBe(false);
+
+    // Calling saveConfig with the SAME provider/baseUrl should NOT abort
     await saveConfig({
       provider: 'ollama',
       baseUrl: 'http://localhost:11434/v1',
@@ -174,12 +229,115 @@ describe('Bug 13 — saveConfig aborts in-flight requests', () => {
       maxTokens: 512
     });
 
-    expect(capturedSignal.aborted).toBe(true);
+    // Signal should still not be aborted
+    expect(capturedSignal.aborted).toBe(false);
 
-    // Abort is non-retryable so chat() resolves quickly with an error
+    // Resolve the fetch so chatPromise completes
+    resolveHangingFetch();
     const result = await chatPromise;
-    expect(result.error).toBeDefined();
+    expect(result.content).toBe('done');
   }, 10000);
+});
+
+// Bug 19: AbortError from saveConfig triggers one retry on the new config
+describe('Bug 19 — abort-triggered retry on new config', () => {
+  test('chat() retries once after abort caused by saveConfig and succeeds', async () => {
+    let callCount = 0;
+    let firstSignal;
+
+    global.fetch = jest.fn().mockImplementation((_url, opts) => {
+      callCount++;
+      if (callCount === 1) {
+        // First call: capture signal and abort immediately via saveConfig
+        firstSignal = opts.signal;
+        return new Promise((_resolve, reject) => {
+          opts.signal.addEventListener('abort', () => {
+            const abortErr = new Error('The operation was aborted.');
+            abortErr.name = 'AbortError';
+            reject(abortErr);
+          });
+        });
+      }
+      // Second call (retry): succeed with a valid response
+      return Promise.resolve({
+        ok: true,
+        headers: { get: () => null },
+        json: async () => ({
+          choices: [{ message: { content: 'Retry succeeded' } }],
+          usage: { prompt_tokens: 5, completion_tokens: 10 }
+        })
+      });
+    });
+
+    const chatPromise = chat({ userMessage: 'test retry' });
+
+    // Wait for fetch to be called
+    await new Promise(r => setTimeout(r, 20));
+
+    // Abort by switching to a different provider
+    await saveConfig({
+      provider: 'openai',
+      baseUrl: 'https://api.openai.com/v1',
+      apiKey: 'sk-test',
+      model: 'gpt-4o',
+      maxTokens: 512
+    });
+
+    const result = await chatPromise;
+
+    // The retry should have succeeded
+    expect(result.content).toBe('Retry succeeded');
+    expect(result.error).toBeUndefined();
+    expect(callCount).toBe(2);
+  }, 10000);
+});
+
+// Bug 32: Smart error message extraction from provider responses
+describe('Bug 32 — extractProviderErrorMessage', () => {
+  test('extracts error_description from {error: {error_description}} shape', async () => {
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      headers: { get: () => null },
+      json: async () => ({
+        error: { error_description: 'Token has expired' }
+      })
+    });
+
+    const result = await chat({ userMessage: 'test' });
+    expect(result.error).toMatch(/Provider returned error: Token has expired/);
+  });
+
+  test('extracts detail from top-level {detail: "..."} shape', async () => {
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      headers: { get: () => null },
+      json: async () => ({
+        error: { detail: 'Model not found' }
+      })
+    });
+
+    const result = await chat({ userMessage: 'test' });
+    expect(result.error).toMatch(/Provider returned error: Model not found/);
+  });
+
+  test('extracts top-level detail when error object is absent', async () => {
+    // Simulate a provider that uses top-level detail instead of error.detail
+    // This goes through fetchOpenAICompat; data.error must be set to trigger the path
+    // We test this via the helper indirectly: use error: {} with no message but top-level detail
+    // Actually, the guard is `if (data.error)` — truthy for {}
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      headers: { get: () => null },
+      json: async () => ({
+        error: {},
+        detail: 'Rate limit reached'
+      })
+    });
+
+    const result = await chat({ userMessage: 'test' });
+    // error:{} has no recognized sub-field, so falls through to data.detail
+    expect(result.error).toMatch(/Provider returned error: Rate limit reached/);
+  });
 });
 
 // Bug 24: error-path estimate uses body.max_tokens (pessimistic)

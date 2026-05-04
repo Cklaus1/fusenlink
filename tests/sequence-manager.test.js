@@ -7,6 +7,7 @@
  * to behave like the real chrome.storage.local API (callback-based, async).
  */
 
+import * as SequenceManager from '../src/background/sequence-manager.js';
 import {
   createSequence,
   enrollContacts,
@@ -16,7 +17,9 @@ import {
   getSequences,
   getSequence,
   deleteSequence,
-  setSequenceStatus
+  setSequenceStatus,
+  nextSendableTime,
+  reapCompletedContacts
 } from '../src/background/sequence-manager.js';
 
 // Backing in-memory storage. Wired in beforeEach.
@@ -103,7 +106,7 @@ describe('createSequence', () => {
 describe('enrollContacts', () => {
   // Disable quiet hours for these tests so nextMessageAt is not shifted
   // forward into the next business day (which is exercised separately).
-  const noQuiet = { staggerMinutes: 0, quietHoursStart: 0, quietHoursEnd: 24 };
+  const noQuiet = { staggerMinutes: 0, quietHoursStart: 0, quietHoursEnd: 24, weekdaysOnly: false };
 
   test('enrolls N contacts with currentStep=0, status=active, nextMessageAt=~now', async () => {
     const seq = await createSequence({ name: 'C', steps: [{ template: 't' }], settings: noQuiet });
@@ -166,7 +169,7 @@ describe('enrollContacts', () => {
 describe('markReplied', () => {
   // Tests in this and subsequent describe blocks don't care about exact send
   // times — disable quiet-hours/staggering so behavior is deterministic.
-  const noQuiet = { staggerMinutes: 0, quietHoursStart: 0, quietHoursEnd: 24 };
+  const noQuiet = { staggerMinutes: 0, quietHoursStart: 0, quietHoursEnd: 24, weekdaysOnly: false };
 
   test('idempotent: calling twice for same contact only increments stats.replied once', async () => {
     const seq = await createSequence({ name: 'C', steps: [{ template: 't' }], settings: noQuiet });
@@ -206,7 +209,7 @@ describe('markReplied', () => {
 });
 
 describe('recordMessageSent', () => {
-  const noQuiet = { staggerMinutes: 0, quietHoursStart: 0, quietHoursEnd: 24 };
+  const noQuiet = { staggerMinutes: 0, quietHoursStart: 0, quietHoursEnd: 24, weekdaysOnly: false };
 
   test('pushes message, sets lastMessageAt, advances step, schedules next', async () => {
     const seq = await createSequence({
@@ -263,7 +266,7 @@ describe('recordMessageSent', () => {
 });
 
 describe('processSequences', () => {
-  const noQuiet = { staggerMinutes: 0, quietHoursStart: 0, quietHoursEnd: 24 };
+  const noQuiet = { staggerMinutes: 0, quietHoursStart: 0, quietHoursEnd: 24, weekdaysOnly: false };
 
   test('returns ready messages without mutating stored state', async () => {
     const seq = await createSequence({
@@ -350,7 +353,7 @@ describe('processSequences', () => {
 });
 
 describe('Concurrent markReplied + recordMessageSent (lock guarantee)', () => {
-  const noQuiet = { staggerMinutes: 0, quietHoursStart: 0, quietHoursEnd: 24 };
+  const noQuiet = { staggerMinutes: 0, quietHoursStart: 0, quietHoursEnd: 24, weekdaysOnly: false };
 
   test('both writes are visible: messages.length === 1 AND status === "replied"', async () => {
     const seq = await createSequence({
@@ -378,9 +381,11 @@ describe('Concurrent markReplied + recordMessageSent (lock guarantee)', () => {
     //       active because there's a second step). Then markReplied runs,
     //       sees status='active', flips to 'replied'.
     //   (b) markReplied first → status='replied'. Then recordMessageSent
-    //       runs unconditionally (it does NOT check status), pushes message,
-    //       advances step to 1.
-    // Either way: messages.length === 1 AND status === 'replied'.
+    //       (Bug 27) sees status !== 'active' and is a no-op — no message
+    //       pushed, no step advanced.
+    // The lock chain in withLock(fn) preserves submission order: p1 was
+    // scheduled first, so branch (a) is the deterministic outcome here.
+    // Either way: status === 'replied' is preserved.
     expect(c.status).toBe('replied');
     expect(c.currentStep).toBe(1);
 
@@ -432,9 +437,19 @@ describe('getSequences default', () => {
 // --- New behavior: staggering, business hours, defensive copy, error report, DST ---
 
 describe('enrollContacts staggering + quiet hours', () => {
+  // Bug 2/3: quiet-hours are evaluated in `sequence.settings.timezone`
+  // (default UTC). These tests want host-local semantics, so they pin the
+  // timezone explicitly to the host's IANA TZ. They also disable
+  // weekdaysOnly so a "today" landing on a weekend doesn't shift the result.
+  const HOST_TZ = Intl.DateTimeFormat().resolvedOptions().timeZone;
+
   function localTimeAt(hour, dayOffset = 0) {
     const d = new Date();
     d.setDate(d.getDate() + dayOffset);
+    // Skip weekends so "next day" math stays inside Mon-Fri.
+    while (d.getDay() === 0 || d.getDay() === 6) {
+      d.setDate(d.getDate() + 1);
+    }
     d.setHours(hour, 0, 0, 0);
     return d.getTime();
   }
@@ -450,8 +465,9 @@ describe('enrollContacts staggering + quiet hours', () => {
 
     const seq = await createSequence({
       name: 'Big',
-      steps: [{ template: 't' }]
-      // default settings: stagger=5, quiet 8..20
+      steps: [{ template: 't' }],
+      // Pin TZ to host so getHours()-based assertions match.
+      settings: { timezone: HOST_TZ, weekdaysOnly: false }
     });
 
     const contacts = Array.from({ length: 50 }, (_, i) => ({
@@ -476,10 +492,14 @@ describe('enrollContacts staggering + quiet hours', () => {
   });
 
   test('1 enrollment at 11pm shifts nextMessageAt to 8am next day', async () => {
-    const elevenPm = localTimeAt(23); // 23:00 local
+    const elevenPm = localTimeAt(23); // 23:00 local on a weekday
     jest.useFakeTimers({ now: elevenPm, doNotFake: ['queueMicrotask'] });
 
-    const seq = await createSequence({ name: 'Late', steps: [{ template: 't' }] });
+    const seq = await createSequence({
+      name: 'Late',
+      steps: [{ template: 't' }],
+      settings: { timezone: HOST_TZ, weekdaysOnly: false }
+    });
     await enrollContacts(seq.id, [
       { name: 'Late', profileUrl: 'https://www.linkedin.com/in/late/' }
     ]);
@@ -502,7 +522,7 @@ describe('enrollContacts error report (Bug 28)', () => {
     const seq = await createSequence({
       name: 'Mixed',
       steps: [{ template: 't' }],
-      settings: { staggerMinutes: 0, quietHoursStart: 0, quietHoursEnd: 24 }
+      settings: { staggerMinutes: 0, quietHoursStart: 0, quietHoursEnd: 24, weekdaysOnly: false }
     });
 
     const contacts = [
@@ -551,7 +571,7 @@ describe('recordMessageSent DST-safe arithmetic (Bug 18)', () => {
         { template: 'first' },
         { template: 'second', delayDays: 7 }
       ],
-      settings: { staggerMinutes: 0, quietHoursStart: 0, quietHoursEnd: 24 }
+      settings: { staggerMinutes: 0, quietHoursStart: 0, quietHoursEnd: 24, weekdaysOnly: false }
     });
     const url = 'https://www.linkedin.com/in/dst/';
     await enrollContacts(seq.id, [{ name: 'D', profileUrl: url }]);
@@ -571,7 +591,7 @@ describe('processSequences defensive deep copy (Bug 3)', () => {
     const seq = await createSequence({
       name: 'C',
       steps: [{ template: 'hi' }],
-      settings: { staggerMinutes: 0, quietHoursStart: 0, quietHoursEnd: 24 }
+      settings: { staggerMinutes: 0, quietHoursStart: 0, quietHoursEnd: 24, weekdaysOnly: false }
     });
     const url = 'https://www.linkedin.com/in/m/';
     await enrollContacts(seq.id, [{ name: 'M', profileUrl: url }]);
@@ -589,5 +609,220 @@ describe('processSequences defensive deep copy (Bug 3)', () => {
     expect(stored.messages).toEqual([]);
     expect(stored.status).toBe('active');
     expect(stored.currentStep).toBe(0);
+  });
+});
+
+// --- Bug 27: recordMessageSent must skip non-active contacts ---
+
+describe('recordMessageSent status guard (Bug 27)', () => {
+  const noQuiet = { staggerMinutes: 0, quietHoursStart: 0, quietHoursEnd: 24, weekdaysOnly: false };
+
+  test('replied contact: recordMessageSent is a no-op (no message, no step advance, no schedule)', async () => {
+    const seq = await createSequence({
+      name: 'C',
+      steps: [{ template: 'first' }, { template: 'second', delayDays: 5 }],
+      settings: noQuiet
+    });
+    const url = 'https://www.linkedin.com/in/replied/';
+    await enrollContacts(seq.id, [{ name: 'R', profileUrl: url }]);
+
+    // Mark replied first — flips status and increments stats.replied.
+    await markReplied(seq.id, url);
+
+    // Snapshot state immediately after markReplied.
+    const before = JSON.parse(JSON.stringify(readStored('data.sequences').items[seq.id]));
+
+    // Now call recordMessageSent — must not advance currentStep, must not push
+    // a message, must not bump stats.sent, must not reschedule nextMessageAt.
+    await recordMessageSent(seq.id, url, 'should not be sent');
+
+    const after = readStored('data.sequences').items[seq.id];
+    expect(after.contacts[url].status).toBe('replied');
+    expect(after.contacts[url].currentStep).toBe(0);
+    expect(after.contacts[url].messages).toEqual([]);
+    expect(after.contacts[url].nextMessageAt).toBe(before.contacts[url].nextMessageAt);
+    expect(after.stats.sent).toBe(0);
+    // stats.completed must not be incremented either.
+    expect(after.stats.completed).toBe(0);
+  });
+
+  test('completed contact: recordMessageSent is a no-op', async () => {
+    const seq = await createSequence({
+      name: 'C',
+      steps: [{ template: 't' }],
+      settings: noQuiet
+    });
+    const url = 'https://www.linkedin.com/in/done/';
+    await enrollContacts(seq.id, [{ name: 'D', profileUrl: url }]);
+
+    // Force completed status directly.
+    const data = readStored('data.sequences');
+    data.items[seq.id].contacts[url].status = 'completed';
+    data.items[seq.id].contacts[url].currentStep = 1;
+    _localStore.set('data.sequences', data);
+
+    await recordMessageSent(seq.id, url, 'should not be sent');
+
+    const after = readStored('data.sequences').items[seq.id];
+    expect(after.contacts[url].status).toBe('completed');
+    expect(after.contacts[url].messages).toEqual([]);
+    expect(after.stats.sent).toBe(0);
+  });
+});
+
+// --- Bug 2: timezone-aware quiet hours ---
+
+describe('nextSendableTime timezone-aware (Bug 2)', () => {
+  test('America/Los_Angeles, 11pm LA → next 8am LA (within quiet-hours window)', async () => {
+    // 11pm in LA on a Tuesday = 07:00 UTC Wednesday.
+    // Pick a clearly-not-DST date to keep math stable.
+    // Tuesday, 2026-04-07 23:00 LA = 2026-04-08 06:00 UTC (PDT, UTC-7).
+    const tuesdayLA11pm = Date.UTC(2026, 3, 8, 6, 0, 0); // April 8 2026 06:00Z
+    const sequence = {
+      settings: {
+        timezone: 'America/Los_Angeles',
+        quietHoursStart: 8,
+        quietHoursEnd: 20,
+        weekdaysOnly: false
+      }
+    };
+    const next = nextSendableTime(tuesdayLA11pm, sequence);
+    // Expected: 8am LA Wednesday = 15:00 UTC.
+    const expected = Date.UTC(2026, 3, 8, 15, 0, 0);
+    expect(next).toBe(expected);
+
+    // Sanity: getHours-in-zone of the result is 8 in LA.
+    const hour = parseInt(
+      new Intl.DateTimeFormat('en-US', {
+        timeZone: 'America/Los_Angeles', hour: 'numeric', hourCycle: 'h23'
+      }).format(new Date(next)),
+      10
+    );
+    expect(hour).toBe(8);
+  });
+
+  test('UTC default: a 23:00 UTC time shifts to 08:00 UTC next day', () => {
+    // 2026-06-10 23:00 UTC (a Wednesday).
+    const wedNight = Date.UTC(2026, 5, 10, 23, 0, 0);
+    const sequence = {
+      settings: {
+        // timezone defaults to UTC
+        quietHoursStart: 8,
+        quietHoursEnd: 20,
+        weekdaysOnly: false
+      }
+    };
+    const next = nextSendableTime(wedNight, sequence);
+    expect(next).toBe(Date.UTC(2026, 5, 11, 8, 0, 0));
+  });
+});
+
+// --- Bug 3: weekdaysOnly ---
+
+describe('nextSendableTime weekdaysOnly (Bug 3)', () => {
+  test('Saturday 10am UTC with weekdaysOnly=true shifts to Monday 8am UTC', () => {
+    // 2026-04-11 is a Saturday.
+    const sat10am = Date.UTC(2026, 3, 11, 10, 0, 0);
+    const sequence = {
+      settings: {
+        timezone: 'UTC',
+        quietHoursStart: 8,
+        quietHoursEnd: 20,
+        weekdaysOnly: true
+      }
+    };
+    const next = nextSendableTime(sat10am, sequence);
+    // Monday 2026-04-13 08:00 UTC.
+    const expected = Date.UTC(2026, 3, 13, 8, 0, 0);
+    expect(next).toBe(expected);
+    expect(new Date(next).getUTCDay()).toBe(1); // Monday
+  });
+
+  test('Sunday 9am UTC with weekdaysOnly=true also shifts to Monday 8am UTC', () => {
+    // 2026-04-12 is a Sunday.
+    const sun9am = Date.UTC(2026, 3, 12, 9, 0, 0);
+    const sequence = {
+      settings: { timezone: 'UTC', quietHoursStart: 8, quietHoursEnd: 20, weekdaysOnly: true }
+    };
+    const next = nextSendableTime(sun9am, sequence);
+    expect(next).toBe(Date.UTC(2026, 3, 13, 8, 0, 0));
+  });
+
+  test('weekdaysOnly=false: Saturday 10am UTC stays Saturday 10am', () => {
+    const sat10am = Date.UTC(2026, 3, 11, 10, 0, 0);
+    const sequence = {
+      settings: { timezone: 'UTC', quietHoursStart: 8, quietHoursEnd: 20, weekdaysOnly: false }
+    };
+    const next = nextSendableTime(sat10am, sequence);
+    expect(next).toBe(sat10am);
+  });
+});
+
+// --- Bug 25: enrollContacts apiVersion ---
+
+describe('enrollContacts apiVersion (Bug 25)', () => {
+  test('returns { apiVersion: 2, enrolled, skipped } shape', async () => {
+    const seq = await createSequence({
+      name: 'V',
+      steps: [{ template: 't' }],
+      settings: { staggerMinutes: 0, quietHoursStart: 0, quietHoursEnd: 24, weekdaysOnly: false }
+    });
+    const result = await enrollContacts(seq.id, [
+      { name: 'A', profileUrl: 'https://www.linkedin.com/in/a/' },
+      { name: 'B' } // missing profileUrl → skipped
+    ]);
+    expect(result.apiVersion).toBe(2);
+    expect(result.enrolled).toBe(1);
+    expect(Array.isArray(result.skipped)).toBe(true);
+    expect(result.skipped).toHaveLength(1);
+  });
+});
+
+// --- Bug 34: processSequences should not double-read sequences ---
+
+describe('processSequences single-read consolidation (Bug 34)', () => {
+  test('processSequences with no overruns reads sequences exactly once', async () => {
+    const seq = await createSequence({
+      name: 'S',
+      steps: [{ template: 't' }],
+      settings: { staggerMinutes: 0, quietHoursStart: 0, quietHoursEnd: 24, weekdaysOnly: false }
+    });
+    await enrollContacts(seq.id, [
+      { name: 'A', profileUrl: 'https://www.linkedin.com/in/a/' }
+    ]);
+
+    // Spy on the module's getSequences entry point. Note: the in-module
+    // calls go through the local binding, so we count storage.local.get
+    // hits keyed on 'data.sequences' instead — those are the actual reads.
+    const getSpy = chrome.storage.local.get;
+    getSpy.mockClear();
+
+    await processSequences();
+
+    // Count gets that asked for 'data.sequences'.
+    const dataSeqGets = getSpy.mock.calls.filter(args => args[0] === 'data.sequences').length;
+    // Bug 34: was 2 (reapCompletedContacts + processSequences). Now should be 1.
+    expect(dataSeqGets).toBe(1);
+  });
+
+  test('reapCompletedContacts is still exported for direct use', async () => {
+    const seq = await createSequence({
+      name: 'S',
+      steps: [{ template: 't' }],
+      settings: { staggerMinutes: 0, quietHoursStart: 0, quietHoursEnd: 24, weekdaysOnly: false }
+    });
+    const url = 'https://www.linkedin.com/in/over/';
+    await enrollContacts(seq.id, [{ name: 'O', profileUrl: url }]);
+
+    // Force overrun.
+    const data = readStored('data.sequences');
+    data.items[seq.id].contacts[url].currentStep = 5;
+    _localStore.set('data.sequences', data);
+
+    await reapCompletedContacts();
+
+    const after = readStored('data.sequences').items[seq.id];
+    expect(after.contacts[url].status).toBe('completed');
+    expect(after.stats.completed).toBe(1);
   });
 });

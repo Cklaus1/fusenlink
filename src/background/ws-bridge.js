@@ -13,7 +13,8 @@ const RECONNECT_ALARM = 'ws-reconnect';
 const RECONNECT_MIN_MINUTES = 0.1;  // ~6 seconds
 const RECONNECT_MAX_MINUTES = 2;    // 2 minutes
 const MAX_RECONNECT_ATTEMPTS = 50;  // Switch to backstop retry after ~50 attempts
-const RECONNECT_BACKSTOP_MINUTES = 30; // Long-period retry once fast attempts exhausted
+const BACKSTOP_BASE_MIN = 30;       // First backstop delay: 30 minutes
+const BACKSTOP_MAX_MIN = 24 * 60;   // Maximum backstop delay: 24 hours
 
 let configuredHost = 'localhost';
 let configuredPort = 9333;
@@ -22,6 +23,7 @@ let socket = null;
 let messageHandler = null;
 let reconnectDelay = RECONNECT_MIN_MINUTES; // Exponential backoff
 let reconnectAttempts = 0;
+let consecutiveBackstops = 0;
 
 function getWsUrl() {
   return `ws://${configuredHost}:${configuredPort}/ws`;
@@ -94,6 +96,7 @@ function connect() {
       console.log('[ws-bridge] Connected to sidecar');
       reconnectDelay = RECONNECT_MIN_MINUTES; // Reset backoff on success
       reconnectAttempts = 0;
+      consecutiveBackstops = 0; // Reset backstop escalation on successful connection
       clearReconnect();
 
       // Flush any responses that were queued while the socket was closed
@@ -180,10 +183,16 @@ function scheduleReconnect() {
   if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
     // Don't give up entirely — back off to a long-period retry so the bridge
     // recovers when the sidecar starts later.
-    console.warn('[ws-bridge] Max reconnect attempts reached, backing off to long-period retry');
-    chrome.alarms.create(RECONNECT_ALARM, { delayInMinutes: RECONNECT_BACKSTOP_MINUTES });
-    // Reset counter and delay so the NEXT attempt (after the backstop fires)
-    // resumes fast retries rather than triggering another immediate backstop.
+    // Multiply backstop delay exponentially up to a daily cap to avoid burning
+    // battery on a permanently-offline sidecar.
+    consecutiveBackstops++;
+    const delay = Math.min(
+      BACKSTOP_BASE_MIN * Math.pow(2, consecutiveBackstops - 1),
+      BACKSTOP_MAX_MIN
+    );
+    console.warn(`[ws-bridge] Backstop #${consecutiveBackstops}, retry in ${delay} min`);
+    chrome.alarms.create(RECONNECT_ALARM, { delayInMinutes: delay });
+    // Reset fast-retry counters so the next alarm starts fresh fast retries.
     reconnectAttempts = 0;
     reconnectDelay = RECONNECT_MIN_MINUTES;
     return;

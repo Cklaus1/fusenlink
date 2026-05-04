@@ -11,6 +11,13 @@ module.exports = {
   output: {
     filename: '[name].bundle.js',
     path: path.resolve(__dirname, 'dist'),
-    clean: true
+    clean: true,
+    // Disable webpack's auto-publicPath detection (which reads
+    // document.currentScript.src at runtime). With '' the chunk URL becomes a
+    // bare filename, which is fine in the extension context (chunks are
+    // web_accessible_resources). Removes the need for the document.currentScript
+    // shim in the CDP shell. (Shim is kept in shell.js as defense-in-depth for
+    // older bundles.)
+    publicPath: ''
   }
 };

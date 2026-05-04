@@ -242,6 +242,18 @@ describe('Expression Evaluator', () => {
     test('ternary inside parentheses', () => {
       expect(evaluate('1 + ($x > 0 ? 10 : 20)', { x: 1 })).toBe(11);
     });
+
+    test('|| binds tighter than ?: — JS-correct precedence (Bug 9)', () => {
+      // In JS, `0 || 1 ? 2 : 3` parses as `(0 || 1) ? 2 : 3` = 2.
+      expect(evaluate('0 || 1 ? 2 : 3', {})).toBe(2);
+      expect(evaluate('0 || 0 ? 1 : 2', {})).toBe(2);
+      expect(evaluate('1 && 0 ? 1 : 2', {})).toBe(2);
+    });
+
+    test('ternary with comparison test branch (Bug 9)', () => {
+      expect(evaluate('$x > 0 ? $x : 0', { x: 5 })).toBe(5);
+      expect(evaluate('$x > 0 ? $x : 0', { x: -3 })).toBe(0);
+    });
   });
 
   describe('bracket member access (Bug 26)', () => {
@@ -271,6 +283,33 @@ describe('Expression Evaluator', () => {
     test('index on null returns undefined', () => {
       expect(evaluate('$x[0]', { x: null })).toBe(undefined);
     });
+
+    test('bracket+member chain $arr[0].name (Bug 10)', () => {
+      expect(evaluate('$arr[0].name', { arr: [{ name: 'Alice' }] })).toBe('Alice');
+      expect(evaluate('$arr[0].name === "Alice"', { arr: [{ name: 'Alice' }] })).toBe(true);
+    });
+
+    test('chained index $arr[0][1] (Bug 10)', () => {
+      expect(evaluate('$arr[0][1]', { arr: [[10, 20], [30, 40]] })).toBe(20);
+    });
+
+    test('variable index then member $arr[$i].name (Bug 10)', () => {
+      const vars = { arr: [{ name: 'A' }, { name: 'B' }, { name: 'C' }], i: 1 };
+      expect(evaluate('$arr[$i].name', vars)).toBe('B');
+    });
+
+    test('member access then index $obj.list[0] (Bug 10)', () => {
+      expect(evaluate('$obj.list[0]', { obj: { list: ['a', 'b'] } })).toBe('a');
+    });
+
+    test('member on null is null-safe (Bug 10)', () => {
+      expect(evaluate('$x.y', { x: null })).toBe(undefined);
+      expect(evaluate('$x.y.z', { x: { y: null } })).toBe(undefined);
+    });
+
+    test('member chain off parenthesized expression (Bug 10)', () => {
+      expect(evaluate('($obj).name', { obj: { name: 'Alice' } })).toBe('Alice');
+    });
   });
 
   describe('number tokenizer', () => {
@@ -278,21 +317,19 @@ describe('Expression Evaluator', () => {
       expect(evaluate('1.5')).toBe(1.5);
     });
 
-    test('multi-dot number "1.2.3" tokenizes as 1.2, not as a single bogus number', () => {
-      // The tokenizer now stops a number after one decimal point. The
-      // remaining ".3" begins with a '.', which is not a recognized starter
-      // for any token — the tokenizer warns and skips the '.' and tokenizes
-      // "3" as a separate number. The parser only consumes one primary
-      // expression at the top level, so `evaluate('1.2.3')` returns 1.2.
-      // (Previously the tokenizer slurped "1.2.3" into one token whose
-      // parseFloat coincidentally also yielded 1.2 — but with garbage like
-      // "1..2" it would have produced NaN. Now the boundary is principled.)
-      expect(evaluate('1.2.3', {})).toBe(1.2);
+    test('multi-dot number "1.2.3" is rejected as malformed', () => {
+      // The tokenizer stops a number after one decimal point. The remaining
+      // ".3" is now emitted as a DOT token followed by NUMBER (Bug 10), which
+      // the parser treats as member access. `1.2.<NUMBER>` is invalid as a
+      // member-access expression, so evaluate() catches the parse error and
+      // returns undefined. Previously the tokenizer silently slurped the
+      // trailing ".3" — surfacing a parse error is more principled.
+      expect(evaluate('1.2.3', {})).toBe(undefined);
     });
 
-    test('double-dot "1..2" tokenizes as 1 (no NaN)', () => {
+    test('double-dot "1..2" is rejected as malformed', () => {
       // Confirms the tokenizer rejects a second dot rather than producing NaN.
-      expect(evaluate('1..2', {})).toBe(1);
+      expect(evaluate('1..2', {})).toBe(undefined);
     });
 
     test('number followed by member access still parses cleanly', () => {

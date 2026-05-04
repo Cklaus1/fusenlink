@@ -197,6 +197,56 @@ if (cohortForm) {
   });
 }
 
+// Bug 6: surface storage usage in a "Storage" section.
+// Reads the sentinel `meta.quota` key written by storage.js.
+document.addEventListener('DOMContentLoaded', () => {
+  chrome.storage.local.get('meta.quota', (result) => {
+    if (chrome.runtime.lastError) return;
+    const q = result['meta.quota'];
+    const el = document.getElementById('storageStats');
+    if (!el) return;
+    if (!q) {
+      el.textContent = 'Storage usage: not yet measured.';
+      return;
+    }
+    const usedMB = (q.bytes / 1024 / 1024).toFixed(2);
+    const limitMB = (q.limit / 1024 / 1024).toFixed(0);
+    const pct = Math.round(q.ratio * 100);
+    const when = q.lastChecked ? new Date(q.lastChecked).toLocaleString() : 'unknown';
+    el.textContent =
+      `Storage usage: ${usedMB} MB / ${limitMB} MB (${pct}%) — last checked ${when}`;
+  });
+});
+
+// Bug 7: surface the migration log in a "Recent Updates" section.
+// Reads the `meta.migrations` array written by playbook-store.js.
+document.addEventListener('DOMContentLoaded', () => {
+  chrome.storage.local.get('meta.migrations', (result) => {
+    if (chrome.runtime.lastError) return;
+    const log = Array.isArray(result['meta.migrations']) ? result['meta.migrations'] : [];
+    const el = document.getElementById('migrationLog');
+    if (!el) return;
+    if (log.length === 0) {
+      el.textContent = 'No migrations recorded.';
+      return;
+    }
+    el.innerHTML = '';
+    log.slice(-10).reverse().forEach((entry) => {
+      const div = document.createElement('div');
+      div.className = 'migration-entry';
+      const when = entry.migratedAt ? new Date(entry.migratedAt).toLocaleString() : 'unknown';
+      const playbooks = (entry.changes && entry.changes.playbooks) || [];
+      const selectors = (entry.changes && entry.changes.selectors) || [];
+      const parts = [];
+      if (playbooks.length) parts.push(`playbooks: ${playbooks.join(', ')}`);
+      if (selectors.length) parts.push(`selectors: ${selectors.join(', ')}`);
+      const summary = parts.join(' | ') || 'no playbook changes';
+      div.textContent = `${when} — ${summary}`;
+      el.appendChild(div);
+    });
+  });
+});
+
 // Test Connection button
 const testBtn = document.getElementById('testConnection');
 const testResult = document.getElementById('testResult');

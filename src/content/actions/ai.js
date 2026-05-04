@@ -162,6 +162,66 @@ export async function prompt(step, engine) {
   if (step.var) engine.vars[step.var] = result;
 }
 
+/**
+ * Insert text into a contentEditable element using the modern InputEvent API.
+ * Falls back gracefully from execCommand → InputEvent + DOM mutation so that
+ * React/Vue synthetic onChange handlers fire correctly.
+ *
+ * @param {HTMLElement} el - A focused contenteditable element
+ * @param {string} text - Single character or string to insert at the caret
+ * @returns {boolean}
+ */
+function insertTextIntoContentEditable(el, text) {
+  el.focus();
+  // Ensure a selection/caret exists at the end of the element
+  const sel = window.getSelection();
+  if (!sel.rangeCount) {
+    const range = document.createRange();
+    range.selectNodeContents(el);
+    range.collapse(false);
+    sel.removeAllRanges();
+    sel.addRange(range);
+  }
+  // Try execCommand first — still works on most Chromium versions and correctly
+  // triggers React's synthetic event system.
+  try {
+    if (document.execCommand && document.execCommand('insertText', false, text)) {
+      return true;
+    }
+  } catch { /* fall through to InputEvent approach */ }
+  // Fallback: dispatch beforeinput + InputEvent + direct DOM mutation so that
+  // frameworks listening to input events still receive the change.
+  const dataTransfer = new DataTransfer();
+  dataTransfer.setData('text/plain', text);
+  el.dispatchEvent(new InputEvent('beforeinput', {
+    inputType: 'insertText',
+    data: text,
+    dataTransfer,
+    bubbles: true,
+    cancelable: true
+  }));
+  // Direct DOM mutation at the current caret position
+  const textNode = document.createTextNode(text);
+  if (sel.rangeCount > 0) {
+    const range = sel.getRangeAt(0);
+    range.deleteContents();
+    range.insertNode(textNode);
+    range.setStartAfter(textNode);
+    range.collapse(true);
+    sel.removeAllRanges();
+    sel.addRange(range);
+  } else {
+    el.appendChild(textNode);
+  }
+  el.dispatchEvent(new InputEvent('input', {
+    inputType: 'insertText',
+    data: text,
+    dataTransfer,
+    bubbles: true
+  }));
+  return true;
+}
+
 export async function typeText(step, engine) {
   const text = engine._resolve(step.text) || '';
   const opts = {};
@@ -178,14 +238,10 @@ export async function typeText(step, engine) {
   if (el.contentEditable === 'true') {
     el.textContent = '';
     el.dispatchEvent(new Event('input', { bubbles: true }));
+    // Type character-by-character with human-like delays to avoid bot detection.
+    // insertTextIntoContentEditable fires proper InputEvents that React picks up.
     for (const char of text) {
-      try {
-        if (!document.execCommand('insertText', false, char)) {
-          el.textContent += char;
-        }
-      } catch {
-        el.textContent += char;
-      }
+      insertTextIntoContentEditable(el, char);
       await DomOps.delay(20 + Math.random() * 30);
     }
   } else {

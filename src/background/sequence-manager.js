@@ -42,37 +42,86 @@ function withLock(fn) {
 }
 
 /**
+ * Bug 2: get the hour-of-day for a timestamp in a specific IANA timezone.
+ * Falls back to the host's local hour if the timezone is invalid.
+ * @param {Date} date
+ * @param {string} timezone - IANA TZ identifier (e.g. 'America/Los_Angeles')
+ * @returns {number} Hour 0..23 in that timezone
+ */
+function getHourInZone(date, timezone) {
+  if (!timezone || timezone === 'UTC') return date.getUTCHours();
+  try {
+    return parseInt(new Intl.DateTimeFormat('en-US', {
+      timeZone: timezone, hour: 'numeric', hourCycle: 'h23'
+    }).format(date), 10);
+  } catch {
+    return date.getHours(); // fallback to local
+  }
+}
+
+/**
+ * Bug 3: is the given timestamp on a sendable day for the sequence?
+ * If `weekdaysOnly` is true (default), Saturdays and Sundays are not sendable.
+ * @param {number} timestampMs
+ * @param {string} timezone
+ * @param {Object} sequence
+ * @returns {boolean}
+ */
+function isSendableDay(timestampMs, timezone, sequence) {
+  if (!sequence?.settings?.weekdaysOnly) return true;
+  try {
+    const wd = new Intl.DateTimeFormat('en-US', { timeZone: timezone, weekday: 'short' }).format(new Date(timestampMs));
+    return wd !== 'Sat' && wd !== 'Sun';
+  } catch {
+    const d = new Date(timestampMs).getDay();
+    return d !== 0 && d !== 6;
+  }
+}
+
+/**
  * Compute the next valid send time for a sequence, applying its quiet-hours
- * window (default 8..20 in user's local time). If the candidate timestamp
- * falls before the quiet-hours start hour on its local day, it is shifted
- * forward to that day's quiet-hours start. If it falls at or after the end
- * hour, it is shifted to the next day's quiet-hours start.
+ * window (default 8..20) in the sequence's configured IANA timezone
+ * (`sequence.settings.timezone`, default 'UTC'). When `weekdaysOnly` is true,
+ * Saturday and Sunday are also skipped.
  *
- * Uses local-time getHours / setHours; date arithmetic uses absolute ms
- * (Date.now() + N*86400000) so DST transitions cannot skip or duplicate
- * an hour at the day boundary.
+ * Bug 2: previously used host-OS local time (`d.getHours()`), which gave the
+ * wrong window for traveling users. Now uses `getHourInZone(date, timezone)`.
+ * Bug 3: previously did not respect a weekday-only setting.
  *
- * @param {number} timestamp - Candidate send time (epoch ms)
+ * The shifting math uses absolute ms arithmetic and a bounded loop (max 96
+ * hour-by-hour iterations) so DST transitions and pathological tz quirks
+ * cannot deadlock.
+ *
+ * @param {number} timestampMs - Candidate send time (epoch ms)
  * @param {Object} sequence - Sequence (reads sequence.settings)
  * @returns {number} Adjusted epoch ms
  */
-export function nextSendableTime(timestamp, sequence) {
+export function nextSendableTime(timestampMs, sequence) {
+  const tz = sequence?.settings?.timezone || 'UTC';
   const start = sequence?.settings?.quietHoursStart ?? DEFAULT_QUIET_HOURS_START;
   const end = sequence?.settings?.quietHoursEnd ?? DEFAULT_QUIET_HOURS_END;
-  const d = new Date(timestamp);
-  const hour = d.getHours();
-  if (hour < start) {
-    d.setHours(start, 0, 0, 0);
-    return d.getTime();
+  // If the window is the whole day, nothing to shift (assuming weekdaysOnly is off).
+  if (start <= 0 && end >= 24 && !sequence?.settings?.weekdaysOnly) {
+    return timestampMs;
   }
-  if (hour >= end) {
-    // Advance one local day, then snap to start hour.
-    // Use ms arithmetic to avoid DST hour-skip in setDate(getDate()+1).
-    const next = new Date(d.getTime() + 24 * 60 * 60 * 1000);
-    next.setHours(start, 0, 0, 0);
-    return next.getTime();
+  let t = timestampMs;
+  // Bounded loop: ~96 iterations is plenty. Worst case is a weekend Sat at
+  // 23:59 UTC which needs ~57 hour-bumps to reach Monday 8am. Capping at 96
+  // covers any TZ + DST + weekend combination without risk of an infinite
+  // loop on weird timezone data.
+  for (let i = 0; i < 96; i++) {
+    if (!isSendableDay(t, tz, sequence)) {
+      t += 60 * 60 * 1000; // bump 1 hour at a time so weekend exit naturally
+                            // lands on the very first hour of the next weekday,
+                            // which the hour-window check then snaps to start.
+      continue;
+    }
+    const hour = getHourInZone(new Date(t), tz);
+    if (hour >= start && hour < end) return t;
+    // Advance one hour and re-check. Cheap and DST-safe.
+    t += 60 * 60 * 1000;
   }
-  return timestamp;
+  return t;
 }
 
 /**
@@ -116,7 +165,13 @@ export async function createSequence({ name, steps, goal, settings }) {
       settings: {
         staggerMinutes: settings?.staggerMinutes ?? DEFAULT_STAGGER_MINUTES,
         quietHoursStart: settings?.quietHoursStart ?? DEFAULT_QUIET_HOURS_START,
-        quietHoursEnd: settings?.quietHoursEnd ?? DEFAULT_QUIET_HOURS_END
+        quietHoursEnd: settings?.quietHoursEnd ?? DEFAULT_QUIET_HOURS_END,
+        // Bug 2: explicit IANA timezone for quiet-hours interpretation. Defaults
+        // to UTC so behavior is deterministic across machines / CI / users.
+        timezone: settings?.timezone || 'UTC',
+        // Bug 3: by default, do not send on weekends. Callers can set false
+        // for sequences where weekend sends are intentional.
+        weekdaysOnly: settings?.weekdaysOnly ?? true
       },
       contacts: {},
       stats: { enrolled: 0, sent: 0, replied: 0, completed: 0 },
@@ -141,10 +196,14 @@ export async function createSequence({ name, steps, goal, settings }) {
  *
  * @param {string} sequenceId
  * @param {Object[]} contacts - [{ name, profileUrl, headline? }]
- * @returns {Promise<{enrolled: number, skipped: Object[]}>}
+ * @returns {Promise<{apiVersion: 2, enrolled: number, skipped: Object[]}>}
  *   `skipped` describes any rows that were dropped:
  *     { reason: 'missing_profileUrl', contact } | { reason: 'duplicate', profileUrl }
  *   The `enrolled` count is preserved for backward compatibility.
+ *
+ * Bug 25: response shape is versioned via `apiVersion`. v1 was `{enrolled}`
+ * only (pre-skipped-reporting). v2 adds `skipped[]`. New TS callers can pin
+ * to v2; existing JS callers that ignore unknown fields keep working.
  */
 export async function enrollContacts(sequenceId, contacts) {
   return withLock(async () => {
@@ -191,7 +250,8 @@ export async function enrollContacts(sequenceId, contacts) {
     sequence.stats.enrolled += enrolled;
     sequence.updatedAt = new Date().toISOString();
     await saveSequences(sequences);
-    return { enrolled, skipped };
+    // Bug 25: explicit apiVersion so callers can detect the response shape.
+    return { apiVersion: 2, enrolled, skipped };
   });
 }
 
@@ -290,10 +350,29 @@ function safeClone(value) {
  * @returns {Promise<Object[]>} Messages ready to send
  */
 export async function processSequences() {
-  // Reap any contacts whose currentStep is past the end of steps (locked).
-  await reapCompletedContacts();
+  // Bug 34: previously this function called reapCompletedContacts() (which
+  // does its own withLock + getSequences + saveSequences) and then immediately
+  // called getSequences() again. That's a redundant storage read on every
+  // hourly tick. Consolidate: do the reap inline under the single lock and
+  // reuse the post-reap snapshot for the read-only "ready messages" pass.
+  const sequences = await withLock(async () => {
+    const seqs = await getSequences();
+    let dirty = false;
+    for (const sequence of Object.values(seqs.items || {})) {
+      if (sequence.status !== 'active') continue;
+      for (const contact of Object.values(sequence.contacts || {})) {
+        if (contact.status !== 'active') continue;
+        if (contact.currentStep >= (sequence.steps || []).length) {
+          contact.status = 'completed';
+          sequence.stats.completed++;
+          dirty = true;
+        }
+      }
+    }
+    if (dirty) await saveSequences(seqs);
+    return seqs;
+  });
 
-  const sequences = await getSequences();
   const readyMessages = [];
   const now = new Date();
 
@@ -362,8 +441,12 @@ export async function processSequences() {
  * Mark any active contacts whose currentStep is at or past the end of their
  * sequence as 'completed'. Runs under the same lock as other mutators so it
  * cannot race them.
+ *
+ * Bug 34: `processSequences` now does the reap inline to avoid a second
+ * `getSequences` read. This helper is retained as an exported entry point
+ * for tests and any callers that want to reap without immediately processing.
  */
-async function reapCompletedContacts() {
+export async function reapCompletedContacts() {
   return withLock(async () => {
     const sequences = await getSequences();
     let dirty = false;
@@ -398,6 +481,14 @@ export async function recordMessageSent(sequenceId, profileUrl, messageText) {
     const sequence = sequences.items?.[sequenceId];
     const contact = sequence?.contacts?.[profileUrl];
     if (!contact) return;
+    // Bug 27: gate on contact.status. After markReplied flips status to
+    // 'replied', a subsequent or concurrent recordMessageSent (queued in the
+    // lock chain behind markReplied) must NOT advance currentStep or schedule
+    // the next message — that defeats reply detection. Same for 'completed'.
+    if (contact.status !== 'active') {
+      console.debug(`SequenceManager: skipping recordMessageSent for ${profileUrl} (status=${contact.status})`);
+      return;
+    }
 
     contact.messages.push({
       step: contact.currentStep,

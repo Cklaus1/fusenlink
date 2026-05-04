@@ -2,6 +2,8 @@
  * Tests for playbook validation.
  */
 import { validatePlaybook } from '../src/shared/playbook-validator.js';
+import { DEFAULT_PLAYBOOKS } from '../src/defaults/playbooks.js';
+import { mergePlaybookFields } from '../src/background/playbook-store.js';
 
 describe('Playbook Validator', () => {
   const validPlaybook = {
@@ -226,6 +228,94 @@ describe('Playbook Validator', () => {
       const { valid } = validatePlaybook({ ...validPlaybook, trustLevel: level });
       expect(valid).toBe(true);
     }
+  });
+
+  // Bug 35: CI guard — every shipped default must pass validation.
+  describe('Bug 35: shipped defaults pass validation', () => {
+    for (const [id, pb] of Object.entries(DEFAULT_PLAYBOOKS)) {
+      test(`DEFAULT_PLAYBOOKS[${id}] is valid`, () => {
+        const { valid, errors } = validatePlaybook(pb);
+        if (!valid) {
+          // Surface the errors in the assertion message so CI shows what broke.
+          throw new Error(`${id} failed validation: ${errors.join('; ')}`);
+        }
+        expect(valid).toBe(true);
+      });
+    }
+  });
+
+  // Bug 4: per-field merge preserves user `settings` customizations on
+  // version bump while dropping settings keys removed in shipped.
+  describe('Bug 4: mergePlaybookFields', () => {
+    test('preserves user settings for keys that still exist in shipped', () => {
+      const shipped = {
+        id: 'pb',
+        version: 2,
+        name: 'New Name',
+        urlPattern: 'foo',
+        steps: [{ action: 'log', message: 'new' }],
+        settings: { a: 1, b: 2 }
+      };
+      const stored = {
+        id: 'pb',
+        version: 1,
+        name: 'Old Name',
+        urlPattern: 'old',
+        steps: [{ action: 'log', message: 'old' }],
+        settings: { a: 99, c: 3 }
+      };
+      const merged = mergePlaybookFields(shipped, stored);
+      // user value preserved for `a`, shipped default kept for `b`, dead key `c` dropped
+      expect(merged.settings).toEqual({ a: 99, b: 2 });
+    });
+
+    test('replaces ship-controlled fields with shipped values', () => {
+      const shipped = {
+        id: 'pb',
+        version: 2,
+        name: 'New Name',
+        description: 'new desc',
+        urlPattern: 'new',
+        buttonLabel: 'New',
+        selectors: 'new.key',
+        steps: [{ action: 'log', message: 'new' }],
+        settings: { a: 1 }
+      };
+      const stored = {
+        id: 'pb',
+        version: 1,
+        name: 'Old Name',
+        description: 'old desc',
+        urlPattern: 'old',
+        buttonLabel: 'Old',
+        selectors: 'old.key',
+        steps: [{ action: 'log', message: 'old' }],
+        settings: { a: 99 }
+      };
+      const merged = mergePlaybookFields(shipped, stored);
+      expect(merged.name).toBe('New Name');
+      expect(merged.description).toBe('new desc');
+      expect(merged.urlPattern).toBe('new');
+      expect(merged.buttonLabel).toBe('New');
+      expect(merged.selectors).toBe('new.key');
+      expect(merged.steps).toEqual(shipped.steps);
+      expect(merged.version).toBe(2);
+      expect(merged.settings).toEqual({ a: 99 });
+    });
+
+    test('handles missing settings on either side', () => {
+      const shipped = {
+        id: 'pb', version: 2, name: 'n', urlPattern: 'u',
+        steps: [{ action: 'log' }]
+      };
+      const stored = {
+        id: 'pb', version: 1, name: 'old', urlPattern: 'old',
+        steps: [{ action: 'log' }], settings: { ghost: 1 }
+      };
+      const merged = mergePlaybookFields(shipped, stored);
+      // shipped has no settings → all stored keys are "dead" → empty
+      expect(merged.settings).toEqual({});
+    });
   });
 
   test('accepts all known action types', () => {

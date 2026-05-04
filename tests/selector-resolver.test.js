@@ -317,17 +317,25 @@ describe('SelectorResolver', () => {
     });
   });
 
-  // ── Bug 17: linkedin.posts registry smoke test ───────────────────────────
+  // ── Bug 14 / Bug 17: linkedin.posts registry smoke test ─────────────────
   describe('linkedin.posts registry', () => {
-    test('loads without throwing and resolves commenterContainer key', () => {
+    test('has version 2, 4 required keys, each with >=3 strategies', () => {
       const { DEFAULT_SELECTOR_REGISTRIES } = require('../src/defaults/selectors.js');
       const postsRegistry = DEFAULT_SELECTOR_REGISTRIES['linkedin.posts'];
       expect(postsRegistry).toBeDefined();
-      expect(postsRegistry.version).toBe(1);
-      expect(postsRegistry.commenterContainer).toBeDefined();
-      expect(postsRegistry.commenterName).toBeDefined();
-      expect(postsRegistry.commenterProfileLink).toBeDefined();
-      expect(postsRegistry.loadMoreComments).toBeDefined();
+      // version bumped to 2 as part of Bug 14 fix
+      expect(postsRegistry.version).toBe(2);
+
+      const requiredKeys = ['commenterContainer', 'commenterName', 'commenterProfileLink', 'loadMoreComments'];
+      for (const key of requiredKeys) {
+        expect(postsRegistry[key]).toBeDefined();
+        expect(postsRegistry[key].strategies.length).toBeGreaterThanOrEqual(3);
+      }
+    });
+
+    test('loads without throwing and resolves commenterContainer key', () => {
+      const { DEFAULT_SELECTOR_REGISTRIES } = require('../src/defaults/selectors.js');
+      const postsRegistry = DEFAULT_SELECTOR_REGISTRIES['linkedin.posts'];
 
       // Instantiate a resolver with the real registry — must not throw
       const r = new SelectorResolver(postsRegistry);
@@ -339,7 +347,7 @@ describe('SelectorResolver', () => {
     });
   });
 
-  // ── Bug 25: MutationObserver cache invalidation ──────────────────────────
+  // ── Bug 25 + Bug 13: MutationObserver cache invalidation with debounce ───
   describe('_installCacheInvalidator / dispose', () => {
     test('dispose disconnects the observer without throwing', () => {
       const r = new SelectorResolver(testRegistry);
@@ -348,7 +356,8 @@ describe('SelectorResolver', () => {
       expect(() => r.dispose()).not.toThrow();
     });
 
-    test('cache is invalidated when a direct child is added to document.body', async () => {
+    test('cache is invalidated after debounce window when a child is added to body', async () => {
+      jest.useFakeTimers();
       const r = new SelectorResolver(testRegistry);
 
       // Warm the cache by triggering a shadow-root lookup
@@ -356,18 +365,67 @@ describe('SelectorResolver', () => {
       expect(r._shadowRootCache).not.toBeNull();
       expect(r._shadowRootCacheTime).toBeGreaterThan(0);
 
-      // Mutate document.body — the observer should fire synchronously in jsdom
+      // Mutate document.body — schedules debounce timer
       const div = document.createElement('div');
       document.body.appendChild(div);
 
-      // MutationObserver callbacks in jsdom fire asynchronously (microtask).
-      // Yield to the microtask queue so the callback runs.
+      // Yield microtask queue so MutationObserver callback fires and schedules timer
       await Promise.resolve();
 
+      // Cache must NOT be cleared yet (debounce timer still pending)
+      expect(r._shadowRootCache).not.toBeNull();
+
+      // Advance timers past the 250ms debounce window
+      jest.advanceTimersByTime(300);
+
+      // Now the cache should be cleared
       expect(r._shadowRootCache).toBeNull();
       expect(r._shadowRootCacheTime).toBe(0);
 
       r.dispose();
+      jest.useRealTimers();
+    });
+
+    test('dispose clears any pending debounce timer', async () => {
+      jest.useFakeTimers();
+      const r = new SelectorResolver(testRegistry);
+
+      // Trigger a mutation to arm the debounce
+      document.body.appendChild(document.createElement('span'));
+      await Promise.resolve(); // let observer callback fire
+
+      // Timer is pending — dispose should clear it without calling invalidateCache
+      const invalidateSpy = jest.spyOn(r, 'invalidateCache');
+      r.dispose();
+      jest.advanceTimersByTime(500);
+
+      // invalidateCache must NOT have been called after dispose
+      expect(invalidateSpy).not.toHaveBeenCalled();
+      jest.useRealTimers();
+    });
+
+    test('100 rapid mutations call invalidateCache at most ~5 times in 1 second', async () => {
+      jest.useFakeTimers();
+      const r = new SelectorResolver(testRegistry);
+      const invalidateSpy = jest.spyOn(r, 'invalidateCache');
+
+      // Fire 100 mutations spread over 1000ms in 10ms increments
+      for (let i = 0; i < 100; i++) {
+        document.body.appendChild(document.createElement('div'));
+        await Promise.resolve(); // flush observer microtask
+        jest.advanceTimersByTime(10); // 10ms between each mutation
+      }
+      // Advance past final debounce window
+      jest.advanceTimersByTime(300);
+
+      // With 250ms debounce and 10ms between mutations, the timer keeps getting
+      // replaced by the leading-edge guard. In 1000ms we expect far fewer than
+      // 100 calls — at most a handful.
+      expect(invalidateSpy.mock.calls.length).toBeLessThanOrEqual(5);
+      expect(invalidateSpy.mock.calls.length).toBeGreaterThanOrEqual(1);
+
+      r.dispose();
+      jest.useRealTimers();
     });
 
     test('setRegistry does NOT install a second observer', () => {
