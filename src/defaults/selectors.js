@@ -181,7 +181,7 @@ export const DEFAULT_SELECTOR_REGISTRIES = {
   },
 
   'linkedin.search-extract': {
-    version: 3,
+    version: 5,
     searchResultCard: {
       strategies: [
         // 2026 lite UI
@@ -212,6 +212,11 @@ export const DEFAULT_SELECTOR_REGISTRIES = {
     },
     cardHeadline: {
       strategies: [
+        // 2026 lite UI: each card's <p>s are at varying depths; CSS nth-of-type
+        // can't reliably walk document order. Use walkFromAnchor: anchor on each
+        // card's first /in/ link, walk to the containing listitem (the card),
+        // then take the 2nd <p> in document order.
+        { type: 'walkFromAnchor', anchorSelector: '[data-testid="lazy-column"] [role="listitem"] a[href*="/in/"]', relative: 'closest-listitem', then: 'p', thenIndex: 1, firstAnchorOnly: false },
         // Legacy
         { type: 'css', value: '.entity-result__primary-subtitle' },
         { type: 'css', value: '[data-anonymize="headline"]' },
@@ -230,6 +235,9 @@ export const DEFAULT_SELECTOR_REGISTRIES = {
     },
     cardLocation: {
       strategies: [
+        // 2026 lite UI: 3rd <p> in document order within each card
+        { type: 'walkFromAnchor', anchorSelector: '[data-testid="lazy-column"] [role="listitem"] a[href*="/in/"]', relative: 'closest-listitem', then: 'p', thenIndex: 2, firstAnchorOnly: false },
+        // Legacy
         { type: 'css', value: '.entity-result__secondary-subtitle' },
         { type: 'css', value: '[class*="entity-result__secondary-subtitle"]' },
         { type: 'css', value: '[data-anonymize="location"]' }
@@ -237,6 +245,12 @@ export const DEFAULT_SELECTOR_REGISTRIES = {
     },
     cardSnippet: {
       strategies: [
+        // 2026 lite UI: snippet appears as p with "Current:" or "About:" prefix
+        { type: 'cssWithText', value: '[role="listitem"] p', text: 'current:' },
+        { type: 'cssWithText', value: '[role="listitem"] p', text: 'about:' },
+        // 4th <p> often holds the snippet when present
+        { type: 'css', value: '[data-testid="lazy-column"] [role="listitem"] p:nth-of-type(4)' },
+        // Legacy
         { type: 'css', value: '.entity-result__summary' },
         { type: 'css', value: '[class*="entity-result__summary"]' }
       ]
@@ -255,7 +269,7 @@ export const DEFAULT_SELECTOR_REGISTRIES = {
   },
 
   'linkedin.profile': {
-    version: 4,
+    version: 5,
     profileName: {
       strategies: [
         // 2026 lite UI: name is the first <h2> inside <main>
@@ -436,6 +450,11 @@ export const DEFAULT_SELECTOR_REGISTRIES = {
     },
     postText: {
       strategies: [
+        // 2026 lite UI: walk from Activity section heading to its listitems' text
+        { type: 'walkFromAnchor', anchorSelector: 'main h2', anchorText: 'activity', firstAnchorOnly: true, relative: 'closest-section', then: '[role="listitem"] p' },
+        // Or: any post-listitem text inside main
+        { type: 'css', value: 'main [role="listitem"] p[dir="ltr"]' },
+        { type: 'css', value: 'main [role="listitem"] p' },
         // Legacy
         { type: 'css', value: '.feed-shared-update-v2__description-wrapper span' },
         { type: 'css', value: '.feed-shared-text' },
@@ -578,7 +597,7 @@ export const DEFAULT_SELECTOR_REGISTRIES = {
   },
 
   'linkedin.connections': {
-    version: 4,
+    version: 5,
     connectionCard: {
       strategies: [
         // 2026 lite UI: card has a "More actions for X" button — locate via that aria-label and walk up if needed
@@ -609,13 +628,19 @@ export const DEFAULT_SELECTOR_REGISTRIES = {
     },
     connectionHeadline: {
       strategies: [
-        // 2026 lite UI: walk from each /in/ anchor up to the listitem, then find a
-        // <p> that does NOT contain a link (the headline is plain text).
-        { type: 'walkFromAnchor', anchorSelector: 'a[href*="/in/"]', relative: 'closest-listitem', then: 'p:not(:has(a))' },
+        // 2026 lite UI: connection rows have no [role="listitem"] wrapper. Walk
+        // from the /in/ link up to the parent that contains BOTH the link and
+        // a "More actions" sibling button — that's the card boundary. Find a
+        // <p> that doesn't contain a link (the headline is plain text).
+        // First fallback: walkFromAnchor finds a candidate <p> below the row's
+        // parent — works because card root is typically the link's grandparent.
+        { type: 'walkFromAnchor', anchorSelector: 'main a[href*="/in/"]', relative: 'parent', then: 'p:not(:has(a))', firstAnchorOnly: false },
+        // Broad: any <p> inside main that isn't a link wrapper, near a profile link
+        { type: 'css', value: 'main a[href*="/in/"] ~ p:not(:has(a))' },
         { type: 'css', value: '[role="listitem"] p:not(:has(a))' },
         { type: 'css', value: '.mn-connection-card__occupation' },
         { type: 'css', value: 'p[class*="occupation"]' },
-        // Legacy (text patterns + DOM walk handle 2026 lite UI at the resolver level)
+        // Legacy
         { type: 'css', value: '[data-anonymize="headline"]' },
         { type: 'css', value: '[class*="mn-connection-card__occupation"]' },
         { type: 'css', value: '[class*="connection-card"] [class*="occupation"]' }
@@ -635,12 +660,13 @@ export const DEFAULT_SELECTOR_REGISTRIES = {
     },
     connectionDate: {
       strategies: [
-        // 2026 lite UI: text appears as "Connected on <date>" — match on text content
-        { type: 'cssWithText', value: '[role="listitem"] *', text: 'connected' },
-        { type: 'cssWithText', value: 'time', text: '' },  // any <time> element
+        // 2026 lite UI: text "Connected on <date>" — plain <p>, no <time> element
+        { type: 'cssWithText', value: 'main p', text: 'connected on' },
+        { type: 'cssWithText', value: 'main p', text: 'connected' },
+        { type: 'cssWithText', value: 'main *', text: 'connected on' },
         { type: 'css', value: 'time.mn-connection-card__connection-date' },
         { type: 'css', value: '[class*="connection-date"]' },
-        // Legacy fallbacks first; resolver-level text matching handles the rest
+        // Legacy
         { type: 'css', value: '.mn-connection-card__connected-time' },
         { type: 'css', value: 'time' },
         { type: 'css', value: '[class*="mn-connection-card__connected"]' },
