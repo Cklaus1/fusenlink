@@ -95,6 +95,14 @@ function connect() {
       reconnectDelay = RECONNECT_MIN_MINUTES; // Reset backoff on success
       reconnectAttempts = 0;
       clearReconnect();
+
+      // Flush any responses that were queued while the socket was closed
+      const now = Date.now();
+      const toSend = responseQueue.filter(e => (now - e.addedAt) <= QUEUE_TTL_MS);
+      responseQueue.length = 0;
+      for (const { data } of toSend) {
+        if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(data));
+      }
     });
 
     socket.addEventListener('message', (event) => {
@@ -142,13 +150,25 @@ function connect() {
   }
 }
 
+const responseQueue = [];  // { data, addedAt }
+const QUEUE_TTL_MS = 30_000;
+
 /**
  * Send a message to the sidecar.
+ * If the socket is not open, queue the response (up to TTL) so it can be
+ * flushed when the connection is restored.
  * @param {Object} data
  */
 function send(data) {
   if (socket && socket.readyState === WebSocket.OPEN) {
     socket.send(JSON.stringify(data));
+  } else {
+    const now = Date.now();
+    responseQueue.push({ data, addedAt: now });
+    // Expire entries that are too old to be useful
+    while (responseQueue.length && (now - responseQueue[0].addedAt) > QUEUE_TTL_MS) {
+      responseQueue.shift();
+    }
   }
 }
 
@@ -162,6 +182,10 @@ function scheduleReconnect() {
     // recovers when the sidecar starts later.
     console.warn('[ws-bridge] Max reconnect attempts reached, backing off to long-period retry');
     chrome.alarms.create(RECONNECT_ALARM, { delayInMinutes: RECONNECT_BACKSTOP_MINUTES });
+    // Reset counter and delay so the NEXT attempt (after the backstop fires)
+    // resumes fast retries rather than triggering another immediate backstop.
+    reconnectAttempts = 0;
+    reconnectDelay = RECONNECT_MIN_MINUTES;
     return;
   }
   reconnectAttempts++;

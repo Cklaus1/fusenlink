@@ -128,6 +128,99 @@ describe('Playbook Validator', () => {
     expect(errors.some(e => e.includes('itemVar'))).toBe(true);
   });
 
+  describe('Bug 11: control-flow termination guards', () => {
+    test('rejects loop without breakIf or maxIterations', () => {
+      const { valid, errors } = validatePlaybook({
+        ...validPlaybook,
+        steps: [{
+          action: 'loop',
+          steps: [{ action: 'log', message: 'spin' }]
+        }]
+      });
+      expect(valid).toBe(false);
+      expect(errors.some(e => e.includes('breakIf') && e.includes('maxIterations'))).toBe(true);
+    });
+
+    test('accepts loop with only breakIf', () => {
+      const { valid, errors } = validatePlaybook({
+        ...validPlaybook,
+        steps: [{
+          action: 'loop',
+          breakIf: '$x > 5',
+          steps: [{ action: 'log', message: 'ok' }]
+        }]
+      });
+      expect(valid).toBe(true);
+      expect(errors).toHaveLength(0);
+    });
+
+    test('accepts loop with only maxIterations', () => {
+      const { valid, errors } = validatePlaybook({
+        ...validPlaybook,
+        steps: [{
+          action: 'loop',
+          maxIterations: 100,
+          steps: [{ action: 'log', message: 'ok' }]
+        }]
+      });
+      expect(valid).toBe(true);
+      expect(errors).toHaveLength(0);
+    });
+
+    test('rejects loop with non-numeric maxIterations and no breakIf', () => {
+      const { valid, errors } = validatePlaybook({
+        ...validPlaybook,
+        steps: [{
+          action: 'loop',
+          maxIterations: 'lots',
+          steps: [{ action: 'log', message: 'spin' }]
+        }]
+      });
+      expect(valid).toBe(false);
+      expect(errors.some(e => e.includes('breakIf') || e.includes('maxIterations'))).toBe(true);
+    });
+
+    test('rejects forEach without items', () => {
+      const { valid, errors } = validatePlaybook({
+        ...validPlaybook,
+        steps: [{
+          action: 'forEach',
+          itemVar: 'x',
+          steps: [{ action: 'log', message: 'hi' }]
+        }]
+      });
+      expect(valid).toBe(false);
+      expect(errors.some(e => e.includes('items'))).toBe(true);
+    });
+
+    test('forEach without items AND without itemVar reports both', () => {
+      const { valid, errors } = validatePlaybook({
+        ...validPlaybook,
+        steps: [{
+          action: 'forEach',
+          steps: [{ action: 'log', message: 'hi' }]
+        }]
+      });
+      expect(valid).toBe(false);
+      expect(errors.some(e => e.includes('items'))).toBe(true);
+      expect(errors.some(e => e.includes('itemVar'))).toBe(true);
+    });
+
+    test('accepts forEach with items and itemVar', () => {
+      const { valid, errors } = validatePlaybook({
+        ...validPlaybook,
+        steps: [{
+          action: 'forEach',
+          items: '$list',
+          itemVar: 'item',
+          steps: [{ action: 'log', message: 'hi' }]
+        }]
+      });
+      expect(valid).toBe(true);
+      expect(errors).toHaveLength(0);
+    });
+  });
+
   test('accepts valid trust levels', () => {
     for (const level of ['auto', 'review', 'interactive']) {
       const { valid } = validatePlaybook({ ...validPlaybook, trustLevel: level });
@@ -146,9 +239,12 @@ describe('Playbook Validator', () => {
       'loop', 'forEach', 'conditional', 'break'
     ];
     const steps = allActions.map(a => ({ action: a }));
-    // Need to add condition for conditional and itemVar for forEach
+    // Need to add required fields per control-flow action.
     steps.find(s => s.action === 'conditional').condition = 'true';
-    steps.find(s => s.action === 'forEach').itemVar = 'x';
+    const fe = steps.find(s => s.action === 'forEach');
+    fe.itemVar = 'x';
+    fe.items = '$list';
+    steps.find(s => s.action === 'loop').maxIterations = 1;
 
     const { valid, errors } = validatePlaybook({ ...validPlaybook, steps });
     expect(errors.filter(e => e.includes('unknown'))).toHaveLength(0);

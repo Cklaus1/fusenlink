@@ -463,6 +463,49 @@ describe('PlaybookEngine', () => {
       }
     });
 
+    test('previousResults is bounded — large arrays are truncated to head/tail summary', async () => {
+      let lastInput = null;
+      chrome.runtime.sendMessage.mockImplementation((message, callback) => {
+        if (message.action === 'aiRequest') {
+          // Capture the input we send to the AI on the second cycle.
+          lastInput = message.input;
+          callback({
+            parsed: { done: true, summary: 'ok' },
+            usage: { prompt_tokens: 1, completion_tokens: 1 }
+          });
+        } else {
+          callback({ success: true });
+        }
+      });
+
+      const playbook = {
+        id: 'bounded',
+        version: 1,
+        name: 'Bounded Test',
+        trustLevel: 'interactive',
+        userRequest: 'check bounds',
+        steps: [],
+        settings: { delayMs: 1, maxCycles: 1 }
+      };
+      const engine = new PlaybookEngine(playbook, emptyRegistry);
+      // Pre-populate vars with a huge array and a huge string to verify the
+      // bounded snapshot helper. Run one cycle so previousResults is built;
+      // since we return done=true on the first cycle, lastInput won't have
+      // previousResults — assert directly on the helper instead.
+      engine.vars.bigArr = Array.from({ length: 100 }, (_, i) => i);
+      engine.vars.bigStr = 'x'.repeat(2000);
+      const snap = engine._boundedVarsSnapshot();
+      expect(snap.bigArr._type).toBe('array');
+      expect(snap.bigArr.length).toBe(100);
+      expect(snap.bigArr.head).toEqual([0, 1, 2]);
+      expect(snap.bigArr.tail).toEqual([97, 98, 99]);
+      expect(typeof snap.bigStr).toBe('string');
+      expect(snap.bigStr.length).toBeLessThan(600);
+      expect(snap.bigStr).toContain('truncated');
+      // Run normally to make sure nothing else broke.
+      await engine.run();
+    });
+
     test('halts when token budget exceeded', async () => {
       let aiCallCount = 0;
       chrome.runtime.sendMessage.mockImplementation((message, callback) => {
@@ -498,6 +541,257 @@ describe('PlaybookEngine', () => {
       // After cycle 2 (100000 used) we exceed budget and break.
       expect(aiCallCount).toBeLessThanOrEqual(2);
       expect(result.tokensUsed).toBeGreaterThan(60000);
+    });
+  });
+
+  describe('REVIEW trust-level batch approval (Bug 6)', () => {
+    let aiPanel;
+    let promptSpy;
+
+    beforeEach(() => {
+      aiPanel = require('../src/ui/ai-panel.js');
+    });
+
+    afterEach(() => {
+      if (promptSpy) promptSpy.mockRestore();
+    });
+
+    test('one prompt approves the next 10 write actions', async () => {
+      document.body.innerHTML = '';
+      const html = Array.from({ length: 12 }, (_, i) => `<button class="b${i}">B${i}</button>`).join('');
+      document.body.innerHTML = html;
+
+      const registry = {};
+      for (let i = 0; i < 12; i++) {
+        registry[`b${i}`] = { strategies: [{ type: 'css', value: `.b${i}` }] };
+      }
+
+      const steps = [];
+      for (let i = 0; i < 12; i++) {
+        steps.push({ action: 'find', selector: `b${i}`, var: `el${i}` });
+        steps.push({ action: 'click', element: `$el${i}` });
+      }
+
+      const playbook = {
+        id: 'review-batch',
+        version: 1,
+        name: 'Review Batch',
+        urlPattern: 'test',
+        trustLevel: 'review',
+        steps,
+        settings: { delayMs: 1, reviewBatchSize: 10 }
+      };
+
+      let promptCalls = 0;
+      promptSpy = jest.spyOn(aiPanel, 'showPrompt').mockImplementation(({ options }) => {
+        promptCalls++;
+        const label = options.find(o => o.startsWith('Approve next'));
+        return Promise.resolve(label);
+      });
+
+      const engine = new PlaybookEngine(playbook, registry);
+      await engine.run();
+
+      // 12 click actions; one prompt covers writes 1..10, second prompt
+      // for writes 11..12.
+      expect(promptCalls).toBe(2);
+    });
+
+    test('"Approve all" suppresses prompts for the rest of the run', async () => {
+      document.body.innerHTML = '';
+      const html = Array.from({ length: 25 }, (_, i) => `<button class="b${i}">B${i}</button>`).join('');
+      document.body.innerHTML = html;
+
+      const registry = {};
+      const steps = [];
+      for (let i = 0; i < 25; i++) {
+        registry[`b${i}`] = { strategies: [{ type: 'css', value: `.b${i}` }] };
+        steps.push({ action: 'find', selector: `b${i}`, var: `el${i}` });
+        steps.push({ action: 'click', element: `$el${i}` });
+      }
+
+      const playbook = {
+        id: 'review-all',
+        version: 1,
+        name: 'Review All',
+        urlPattern: 'test',
+        trustLevel: 'review',
+        steps,
+        settings: { delayMs: 1, reviewBatchSize: 10 }
+      };
+
+      let promptCalls = 0;
+      promptSpy = jest.spyOn(aiPanel, 'showPrompt').mockImplementation(() => {
+        promptCalls++;
+        return Promise.resolve('Approve all');
+      });
+
+      const engine = new PlaybookEngine(playbook, registry);
+      await engine.run();
+
+      expect(promptCalls).toBe(1);
+    });
+
+    test('"Stop" terminates the engine', async () => {
+      document.body.innerHTML = '<button class="b0">B0</button><button class="b1">B1</button>';
+      const registry = {
+        b0: { strategies: [{ type: 'css', value: '.b0' }] },
+        b1: { strategies: [{ type: 'css', value: '.b1' }] }
+      };
+      const playbook = {
+        id: 'review-stop',
+        version: 1,
+        name: 'Review Stop',
+        urlPattern: 'test',
+        trustLevel: 'review',
+        steps: [
+          { action: 'find', selector: 'b0', var: 'e0' },
+          { action: 'click', element: '$e0' },
+          { action: 'find', selector: 'b1', var: 'e1' },
+          { action: 'click', element: '$e1' }
+        ],
+        settings: { delayMs: 1, reviewBatchSize: 10 }
+      };
+
+      promptSpy = jest.spyOn(aiPanel, 'showPrompt').mockResolvedValue('Stop');
+
+      const engine = new PlaybookEngine(playbook, registry);
+      const result = await engine.run();
+      expect(result.stopped).toBe(true);
+    });
+
+    test('button labels reflect the configured reviewBatchSize', async () => {
+      document.body.innerHTML = '<button class="b">x</button>';
+      const registry = { b: { strategies: [{ type: 'css', value: '.b' }] } };
+      const playbook = {
+        id: 'review-label',
+        version: 1,
+        name: 'Review Label',
+        urlPattern: 'test',
+        trustLevel: 'review',
+        steps: [
+          { action: 'find', selector: 'b', var: 'el' },
+          { action: 'click', element: '$el' }
+        ],
+        settings: { delayMs: 1, reviewBatchSize: 25 }
+      };
+
+      let capturedOptions = null;
+      promptSpy = jest.spyOn(aiPanel, 'showPrompt').mockImplementation(({ options }) => {
+        capturedOptions = options;
+        return Promise.resolve('Skip');
+      });
+
+      const engine = new PlaybookEngine(playbook, registry);
+      await engine.run();
+      expect(capturedOptions).toEqual(expect.arrayContaining(['Approve next 25', 'Approve all', 'Skip', 'Stop']));
+    });
+  });
+
+  describe('checkpoint emission (Bug 9)', () => {
+    test('loop emits a checkpoint every 10 iterations', async () => {
+      const calls = [];
+      chrome.runtime.sendMessage.mockImplementation((message, callback) => {
+        calls.push(message);
+        callback({ success: true });
+      });
+
+      const playbook = makePlaybook([
+        { action: 'setVar', var: 'i', value: 0 },
+        {
+          action: 'loop',
+          breakIf: '$i >= 25',
+          steps: [{ action: 'incrementVar', var: 'i' }]
+        }
+      ]);
+
+      const engine = new PlaybookEngine(playbook, emptyRegistry);
+      await engine.run();
+
+      const checkpoints = calls.filter(
+        c => c.action === 'logActivity' && c.entry?.action === 'playbook_checkpoint'
+      );
+      // After 10 and 20 iterations (loop runs 25 times).
+      expect(checkpoints.length).toBe(2);
+      expect(checkpoints[0].entry.outcome).toBe('in_progress');
+    });
+
+    test('forEach emits a checkpoint every 10 iterations', async () => {
+      const calls = [];
+      chrome.runtime.sendMessage.mockImplementation((message, callback) => {
+        calls.push(message);
+        callback({ success: true });
+      });
+
+      const playbook = makePlaybook([
+        { action: 'setVar', var: 'items', value: Array.from({ length: 21 }, (_, i) => i) },
+        {
+          action: 'forEach',
+          items: '$items',
+          itemVar: 'item',
+          steps: [{ action: 'incrementVar', var: 'processedCount' }]
+        }
+      ]);
+
+      const engine = new PlaybookEngine(playbook, emptyRegistry);
+      await engine.run();
+
+      const checkpoints = calls.filter(
+        c => c.action === 'logActivity' && c.entry?.action === 'playbook_checkpoint'
+      );
+      expect(checkpoints.length).toBe(2);
+    });
+  });
+
+  describe('loop maxIterations safety cap (Bug 11)', () => {
+    test('loop with maxIterations stops at the cap', async () => {
+      const playbook = makePlaybook([
+        { action: 'setVar', var: 'i', value: 0 },
+        {
+          action: 'loop',
+          maxIterations: 5,
+          steps: [{ action: 'incrementVar', var: 'i' }]
+        }
+      ]);
+      const engine = new PlaybookEngine(playbook, emptyRegistry);
+      await engine.run();
+      expect(engine.vars.i).toBe(5);
+    });
+
+    test('loop with both breakIf and maxIterations honors whichever fires first', async () => {
+      const playbook = makePlaybook([
+        { action: 'setVar', var: 'i', value: 0 },
+        {
+          action: 'loop',
+          breakIf: '$i >= 3',
+          maxIterations: 100,
+          steps: [{ action: 'incrementVar', var: 'i' }]
+        }
+      ]);
+      const engine = new PlaybookEngine(playbook, emptyRegistry);
+      await engine.run();
+      expect(engine.vars.i).toBe(3);
+    });
+  });
+
+  describe('lastError surfaced after handler throw (Bug 35)', () => {
+    test('engine.vars.lastError is set when an action throws', async () => {
+      const { ACTION_REGISTRY } = require('../src/content/actions/index.js');
+      const originalClick = ACTION_REGISTRY.click;
+      ACTION_REGISTRY.click = () => { throw new Error('boom from click'); };
+
+      const playbook = makePlaybook([
+        { action: 'setVar', var: 'before', value: 1 },
+        { action: 'click', element: 'placeholder' }
+      ]);
+      const engine = new PlaybookEngine(playbook, emptyRegistry);
+
+      try {
+        await engine.run();
+        expect(engine.vars.lastError).toBe('boom from click');
+      } finally {
+        ACTION_REGISTRY.click = originalClick;
+      }
     });
   });
 });

@@ -219,6 +219,60 @@ describe('Expression Evaluator', () => {
     });
   });
 
+  describe('ternary operator (Bug 26)', () => {
+    test('basic ternary picks consequent when truthy', () => {
+      expect(evaluate('$x > 0 ? "yes" : "no"', { x: 1 })).toBe('yes');
+    });
+
+    test('basic ternary picks alternate when falsy', () => {
+      expect(evaluate('$x > 0 ? "yes" : "no"', { x: -1 })).toBe('no');
+    });
+
+    test('ternary with arithmetic in branches', () => {
+      expect(evaluate('$flag ? $a + 1 : $a - 1', { flag: true, a: 5 })).toBe(6);
+      expect(evaluate('$flag ? $a + 1 : $a - 1', { flag: false, a: 5 })).toBe(4);
+    });
+
+    test('ternary right-associativity', () => {
+      // a ? b : c ? d : e == a ? b : (c ? d : e)
+      expect(evaluate('$a ? 1 : $b ? 2 : 3', { a: false, b: true })).toBe(2);
+      expect(evaluate('$a ? 1 : $b ? 2 : 3', { a: false, b: false })).toBe(3);
+    });
+
+    test('ternary inside parentheses', () => {
+      expect(evaluate('1 + ($x > 0 ? 10 : 20)', { x: 1 })).toBe(11);
+    });
+  });
+
+  describe('bracket member access (Bug 26)', () => {
+    test('numeric index on array', () => {
+      expect(evaluate('$x[0]', { x: [5, 6, 7] })).toBe(5);
+      expect(evaluate('$x[2]', { x: [5, 6, 7] })).toBe(7);
+    });
+
+    test('string index on object', () => {
+      expect(evaluate("$row['name']", { row: { name: 'Alice' } })).toBe('Alice');
+    });
+
+    test('variable as index', () => {
+      expect(evaluate('$x[$i]', { x: [10, 20, 30], i: 1 })).toBe(20);
+    });
+
+    test('chained brackets', () => {
+      expect(evaluate('$grid[0][1]', { grid: [[1, 2], [3, 4]] })).toBe(2);
+    });
+
+    test('bracket combined with ternary', () => {
+      // Mirrors the example from the bug report.
+      expect(evaluate('$contacts[0].seen ? 1 : 0', { contacts: [{ seen: true }] })).toBe(1);
+      expect(evaluate('$contacts[0].seen ? 1 : 0', { contacts: [{ seen: false }] })).toBe(0);
+    });
+
+    test('index on null returns undefined', () => {
+      expect(evaluate('$x[0]', { x: null })).toBe(undefined);
+    });
+  });
+
   describe('number tokenizer', () => {
     test('plain decimal still works', () => {
       expect(evaluate('1.5')).toBe(1.5);

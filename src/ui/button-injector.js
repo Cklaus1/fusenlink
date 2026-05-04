@@ -66,7 +66,7 @@ function injectInvitationButtons(playbooks, onRunPlaybook) {
   container.setAttribute('data-playbook-id', playbooks[0].id);
   Object.assign(container.style, {
     position: 'fixed',
-    bottom: '20px',
+    top: '80px',
     left: '20px',
     display: 'flex',
     gap: '12px',

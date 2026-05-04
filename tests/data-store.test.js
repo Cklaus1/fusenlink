@@ -4,6 +4,7 @@
  */
 
 import { storeData, getData, logActivity, deleteData } from '../src/background/data-store.js';
+import { storageSet, getStorageStats } from '../src/shared/storage.js';
 
 let _localStore;
 
@@ -287,6 +288,37 @@ describe('getData and deleteData', () => {
     expect(out.csv).toMatch(/Bob/);
   });
 
+  // Bug 29: csv header should be the union of all rows' keys, not just the
+  // first row's keys. Schema drift between writes used to silently drop
+  // columns introduced in later items.
+  test('itemsToCsv (via getData csv format) produces union header for heterogeneous items', async () => {
+    // First write: only id + name
+    await storeData('contacts', [
+      { id: 'a', name: 'Alice' }
+    ], { mergeKey: 'id' });
+    // Second write: introduces a new column "company"
+    await storeData('contacts', [
+      { id: 'b', name: 'Bob', company: 'Acme' }
+    ], { mergeKey: 'id' });
+    // Third write: introduces yet another column "tag"
+    await storeData('contacts', [
+      { id: 'c', name: 'Carol', tag: 'vip' }
+    ], { mergeKey: 'id' });
+
+    const out = await getData('contacts', { format: 'csv' });
+    const headerLine = out.csv.split('\n')[0];
+    // Union header must include every column from every row.
+    expect(headerLine).toContain('id');
+    expect(headerLine).toContain('name');
+    expect(headerLine).toContain('company');
+    expect(headerLine).toContain('tag');
+    // The body should still have all 3 rows.
+    expect(out.csv.split('\n')).toHaveLength(4); // header + 3 rows
+    // Acme should land in the company column
+    expect(out.csv).toMatch(/Acme/);
+    expect(out.csv).toMatch(/vip/);
+  });
+
   test('getData("activityLog") strips internal _writeCount field', async () => {
     // Several writes will set _writeCount on the underlying record.
     for (let i = 0; i < 3; i++) {
@@ -316,5 +348,55 @@ describe('getData and deleteData', () => {
     const r = await deleteData('contacts');
     expect(r.success).toBe(true);
     expect(readStored('data.contacts')).toBeUndefined();
+  });
+});
+
+// Bug 12: storage.js storageSet now triggers a throttled quota check that
+// writes a 'meta.quota' warning entry when usage > 80% of the 10MB local
+// quota. Verify the warning lands when getBytesInUse reports 9MB.
+describe('storage.js quota warning (Bug 12)', () => {
+  beforeEach(() => {
+    // Reset the throttle by clearing any stored 'meta.quota' first.
+    // The throttle is module-scoped, so we use a fresh fake-timer setup.
+    if (chrome.storage.local.getBytesInUse) {
+      chrome.storage.local.getBytesInUse.mockReset?.();
+    }
+  });
+
+  test('writes meta.quota when getBytesInUse reports > 80% of 10MB', async () => {
+    // 9MB out of 10MB → ratio 0.9, above 0.8 threshold
+    const NINE_MB = 9 * 1024 * 1024;
+    chrome.storage.local.getBytesInUse = jest.fn((keysOrCb, maybeCb) => {
+      const cb = typeof keysOrCb === 'function' ? keysOrCb : maybeCb;
+      Promise.resolve().then(() => cb(NINE_MB));
+    });
+
+    // Trigger storageSet which (after success) fires maybeCheckQuota.
+    await storageSet({ 'data.contacts': { items: { a: { name: 'Alice' } } } });
+
+    // Yield a tick so the async getBytesInUse callback can fire.
+    await new Promise(r => setTimeout(r, 0));
+    await new Promise(r => setTimeout(r, 0));
+
+    const meta = readStored('meta.quota');
+    expect(meta).toBeDefined();
+    expect(meta.bytes).toBe(NINE_MB);
+    expect(meta.ratio).toBeCloseTo(0.9, 5);
+    expect(meta.limit).toBe(10 * 1024 * 1024);
+    expect(typeof meta.lastChecked).toBe('string');
+  });
+
+  test('getStorageStats returns current usage stats', async () => {
+    const FOUR_MB = 4 * 1024 * 1024;
+    chrome.storage.local.getBytesInUse = jest.fn((keysOrCb, maybeCb) => {
+      const cb = typeof keysOrCb === 'function' ? keysOrCb : maybeCb;
+      Promise.resolve().then(() => cb(FOUR_MB));
+    });
+
+    const stats = await getStorageStats();
+    expect(stats).not.toBeNull();
+    expect(stats.bytes).toBe(FOUR_MB);
+    expect(stats.limit).toBe(10 * 1024 * 1024);
+    expect(stats.ratio).toBeCloseTo(0.4, 5);
   });
 });

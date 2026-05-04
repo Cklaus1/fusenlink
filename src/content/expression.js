@@ -24,6 +24,10 @@ const T = {
   UNARY: 'UNARY',
   LPAREN: '(',
   RPAREN: ')',
+  LBRACK: '[',
+  RBRACK: ']',
+  QUESTION: '?',
+  COLON: ':',
   EOF: 'EOF'
 };
 
@@ -45,6 +49,14 @@ function tokenize(expr) {
     // Parentheses
     if (ch === '(') { tokens.push({ type: T.LPAREN, value: '(' }); i++; continue; }
     if (ch === ')') { tokens.push({ type: T.RPAREN, value: ')' }); i++; continue; }
+
+    // Brackets — for member-access via [key] (Bug 26)
+    if (ch === '[') { tokens.push({ type: T.LBRACK, value: '[' }); i++; continue; }
+    if (ch === ']') { tokens.push({ type: T.RBRACK, value: ']' }); i++; continue; }
+
+    // Ternary operator pieces (Bug 26)
+    if (ch === '?') { tokens.push({ type: T.QUESTION, value: '?' }); i++; continue; }
+    if (ch === ':') { tokens.push({ type: T.COLON, value: ':' }); i++; continue; }
 
     // Multi-char operators
     const two = expr.slice(i, i + 3);
@@ -70,11 +82,12 @@ function tokenize(expr) {
     // Unary not
     if (ch === '!') { tokens.push({ type: T.UNARY, value: '!' }); i++; continue; }
 
-    // String literal
-    if (ch === "'") {
+    // String literal — single or double quotes
+    if (ch === "'" || ch === '"') {
+      const quote = ch;
       let str = '';
       i++; // skip opening quote
-      while (i < expr.length && expr[i] !== "'") {
+      while (i < expr.length && expr[i] !== quote) {
         str += expr[i];
         i++;
       }
@@ -145,9 +158,26 @@ class Parser {
     throw new Error(`Expected ${type}, got ${tok.type} (${tok.value})`);
   }
 
-  // Entry: OR expression
+  // Entry: ternary (lowest precedence, right-associative)
   parse() {
-    return this.parseOr();
+    return this.parseTernary();
+  }
+
+  // cond ? a : b (Bug 26) — right-associative so "a ? b : c ? d : e"
+  // parses as "a ? b : (c ? d : e)".
+  parseTernary() {
+    const test = this.parseOr();
+    if (this.peek().type === T.QUESTION) {
+      this.advance(); // eat ?
+      const cons = this.parseTernary();
+      if (this.peek().type !== T.COLON) {
+        throw new Error(`Expected ':' in ternary, got ${this.peek().type} (${this.peek().value})`);
+      }
+      this.advance(); // eat :
+      const alt = this.parseTernary();
+      return { type: 'ternary', test, cons, alt };
+    }
+    return test;
   }
 
   // ||
@@ -227,12 +257,46 @@ class Parser {
 
     if (tok.type === T.VAR) {
       this.advance();
-      return { type: 'var', name: tok.value };
+      let node = { type: 'var', name: tok.value };
+      // Bug 26: support bracket indexing on variables, e.g. $contacts[0],
+      // $items[$i], $row['name']. Chains naturally via this loop.
+      // Also support trailing .member access after an index, e.g.
+      // $contacts[0].seen — the tokenizer doesn't carry `.foo` into the
+      // var name once we've started indexing, so handle it here.
+      while (true) {
+        if (this.peek().type === T.LBRACK) {
+          this.advance(); // eat [
+          const key = this.parseTernary();
+          if (this.peek().type !== T.RBRACK) {
+            throw new Error(`Expected ']' in index expression, got ${this.peek().type} (${this.peek().value})`);
+          }
+          this.advance(); // eat ]
+          node = { type: 'index', obj: node, key };
+          continue;
+        }
+        // Trailing .foo.bar after a bracket: tokenizer emits the leading
+        // '.' as an unrecognized character (warning + skip) followed by a
+        // VAR for the rest. We detect a VAR immediately after an index
+        // and treat it as a member-path access.
+        if (node.type === 'index' && this.peek().type === T.VAR) {
+          const memberTok = this.advance();
+          // memberTok.value may be 'seen' or 'a.b.c'. Build chained index
+          // nodes with string keys for each segment so resolveVarPath
+          // doesn't mishandle the leading dot.
+          const segments = memberTok.value.replace(/^\$/, '').split('.').filter(Boolean);
+          for (const seg of segments) {
+            node = { type: 'index', obj: node, key: { type: 'literal', value: seg } };
+          }
+          continue;
+        }
+        break;
+      }
+      return node;
     }
 
     if (tok.type === T.LPAREN) {
       this.advance(); // eat (
-      const inner = this.parseOr();
+      const inner = this.parseTernary();
       this.eat(T.RPAREN); // eat )
       return inner;
     }
@@ -273,6 +337,15 @@ function evalNode(node, vars) {
       return node.value;
     case 'var':
       return resolveVarPath(node.name, vars);
+    case 'index': {
+      // Bug 26: $obj[key] — key may be number or string.
+      const obj = evalNode(node.obj, vars);
+      if (obj == null) return undefined;
+      const key = evalNode(node.key, vars);
+      return obj[key];
+    }
+    case 'ternary':
+      return evalNode(node.test, vars) ? evalNode(node.cons, vars) : evalNode(node.alt, vars);
     case 'or':
       return evalNode(node.left, vars) || evalNode(node.right, vars);
     case 'and':

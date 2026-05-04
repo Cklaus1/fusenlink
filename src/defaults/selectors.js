@@ -365,6 +365,41 @@ export const DEFAULT_SELECTOR_REGISTRIES = {
     }
   },
 
+  'linkedin.posts': {
+    version: 1,
+    // Commenter container — permalink post layout (differs from feed-stream cards)
+    commenterContainer: {
+      strategies: [
+        { type: 'css', value: 'article.comments-comment-item' },
+        { type: 'css', value: '[data-test-id="comment-list-item"]' },
+        { type: 'css', value: '.comments-comment-entity' }
+      ],
+      filters: ['visible']
+    },
+    commenterName: {
+      strategies: [
+        { type: 'css', value: '.comments-post-meta__name-text' },
+        { type: 'css', value: 'span.comments-comment-meta__display-name' },
+        { type: 'css', value: '[data-test-id="comment-actor-name"]' }
+      ]
+    },
+    commenterProfileLink: {
+      strategies: [
+        { type: 'css', value: 'a.comments-post-meta__actor-link' },
+        { type: 'css', value: '.comments-post-meta a[href*="/in/"]' },
+        { type: 'css', value: 'a[href*="/in/"]' }
+      ]
+    },
+    loadMoreComments: {
+      strategies: [
+        { type: 'css', value: 'button.comments-comments-list__load-more-comments-button' },
+        { type: 'cssWithText', value: 'button', text: 'load more comments' },
+        { type: 'cssWithText', value: 'button', text: 'show more results' }
+      ],
+      filters: ['visible', 'enabled']
+    }
+  },
+
   'linkedin.feed': {
     version: 1,
     feedPost: {

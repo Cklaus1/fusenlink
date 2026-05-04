@@ -317,6 +317,69 @@ describe('SelectorResolver', () => {
     });
   });
 
+  // ── Bug 17: linkedin.posts registry smoke test ───────────────────────────
+  describe('linkedin.posts registry', () => {
+    test('loads without throwing and resolves commenterContainer key', () => {
+      const { DEFAULT_SELECTOR_REGISTRIES } = require('../src/defaults/selectors.js');
+      const postsRegistry = DEFAULT_SELECTOR_REGISTRIES['linkedin.posts'];
+      expect(postsRegistry).toBeDefined();
+      expect(postsRegistry.version).toBe(1);
+      expect(postsRegistry.commenterContainer).toBeDefined();
+      expect(postsRegistry.commenterName).toBeDefined();
+      expect(postsRegistry.commenterProfileLink).toBeDefined();
+      expect(postsRegistry.loadMoreComments).toBeDefined();
+
+      // Instantiate a resolver with the real registry — must not throw
+      const r = new SelectorResolver(postsRegistry);
+      document.body.innerHTML = '<article class="comments-comment-item">Commenter</article>';
+      const results = r.findAll('commenterContainer');
+      // jsdom doesn't mock visibility so visible filter may drop it; just verify no throw
+      expect(Array.isArray(results)).toBe(true);
+      r.dispose();
+    });
+  });
+
+  // ── Bug 25: MutationObserver cache invalidation ──────────────────────────
+  describe('_installCacheInvalidator / dispose', () => {
+    test('dispose disconnects the observer without throwing', () => {
+      const r = new SelectorResolver(testRegistry);
+      expect(() => r.dispose()).not.toThrow();
+      // Second dispose should be safe too
+      expect(() => r.dispose()).not.toThrow();
+    });
+
+    test('cache is invalidated when a direct child is added to document.body', async () => {
+      const r = new SelectorResolver(testRegistry);
+
+      // Warm the cache by triggering a shadow-root lookup
+      r._getKnownShadowRoots();
+      expect(r._shadowRootCache).not.toBeNull();
+      expect(r._shadowRootCacheTime).toBeGreaterThan(0);
+
+      // Mutate document.body — the observer should fire synchronously in jsdom
+      const div = document.createElement('div');
+      document.body.appendChild(div);
+
+      // MutationObserver callbacks in jsdom fire asynchronously (microtask).
+      // Yield to the microtask queue so the callback runs.
+      await Promise.resolve();
+
+      expect(r._shadowRootCache).toBeNull();
+      expect(r._shadowRootCacheTime).toBe(0);
+
+      r.dispose();
+    });
+
+    test('setRegistry does NOT install a second observer', () => {
+      const r = new SelectorResolver(testRegistry);
+      const originalObserver = r._mutationObserver;
+      r.setRegistry(testRegistry);
+      // The observer reference must be the same object — setRegistry must not replace it
+      expect(r._mutationObserver).toBe(originalObserver);
+      r.dispose();
+    });
+  });
+
   // ── Bug 3: bad selector warns once, doesn't throw ────────────────────────
   describe('_executeStrategy — bad selector logs once and does not throw', () => {
     test('does not throw for an invalid CSS selector', () => {

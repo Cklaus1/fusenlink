@@ -69,6 +69,11 @@ export class PlaybookEngine {
     this.vars = { settings: this.settings };
     this.stopRequested = false;
     this.startTime = 0;
+    // Session-approval model for REVIEW trust level — see _executeStep.
+    // Bug 6: avoid prompting for every write action during bulk operations.
+    this._reviewBatchSize = playbook.settings?.reviewBatchSize || 10;
+    this._reviewApprovedRemaining = 0;
+    this._reviewApproveAll = false;
   }
 
   /**
@@ -262,10 +267,14 @@ export class PlaybookEngine {
           }
         }
 
+        // Bug 8: bound previousResults to a fixed-size summary. Bounded
+        // context is critical for the token-budget enforcement above to be
+        // meaningful — without this cap, vars accumulate across cycles and
+        // every cycle's prompt grows unboundedly large.
         previousResults = {
           executedSteps: executedCount,
-          vars: this._sanitizeVarsForAI(),
-          ...(stepError ? { error: stepError } : {})
+          lastStepError: stepError || null,
+          varsSnapshot: this._boundedVarsSnapshot()
         };
 
         await DomOps.delay(500);
@@ -348,19 +357,49 @@ export class PlaybookEngine {
       return;
     }
 
-    // Trust level gate — only prompt for valid write actions
+    // Trust level gate — only prompt for valid write actions.
+    // REVIEW trust level uses a session-approval model (Bug 6): a single
+    // prompt grants approval for the next N writes, "all", or stops.
     const trustLevel = this.playbook.trustLevel || TRUST_LEVEL.AUTO;
     if (trustLevel === TRUST_LEVEL.REVIEW && WRITE_ACTIONS.includes(step.action)) {
-      const description = step._description || `Execute "${step.action}" action?`;
-      const result = await showPrompt({
-        title: 'Confirm Action',
-        body: description,
-        options: ['Proceed', 'Skip']
-      });
-      if (result !== 'Proceed') return;
+      if (this._reviewApproveAll) {
+        // Already approved for the rest of the session — proceed.
+      } else if (this._reviewApprovedRemaining > 0) {
+        this._reviewApprovedRemaining--;
+      } else {
+        const batchSize = this._reviewBatchSize;
+        const description = step._description || `Execute "${step.action}" action?`;
+        const approveNextLabel = `Approve next ${batchSize}`;
+        const approveAllLabel = 'Approve all';
+        const result = await showPrompt({
+          title: 'Confirm Action',
+          body: description,
+          options: [approveNextLabel, approveAllLabel, 'Skip', 'Stop']
+        });
+        if (result === 'Stop') {
+          this.stop();
+          return;
+        }
+        if (result === 'Skip') return;
+        if (result === approveAllLabel) {
+          this._reviewApproveAll = true;
+        } else if (result === approveNextLabel) {
+          // This action plus N-1 more.
+          this._reviewApprovedRemaining = Math.max(0, batchSize - 1);
+        } else {
+          // Unknown response — treat as skip for safety.
+          return;
+        }
+      }
     }
 
-    await handler(step, this, Overlay);
+    try {
+      await handler(step, this, Overlay);
+    } catch (err) {
+      // Bug 35: surface lastError so subsequent steps can check $lastError.
+      this.vars.lastError = err && err.message ? err.message : String(err);
+      throw err;
+    }
   }
 
   /**
@@ -408,7 +447,12 @@ export class PlaybookEngine {
 
   /** Execute a loop step. */
   async _executeLoop(step) {
+    // Bug 11: honor maxIterations as a safety cap so a missing/incorrect
+    // breakIf can't run forever.
+    const maxIterations = typeof step.maxIterations === 'number' ? step.maxIterations : Infinity;
+    let iter = 0;
     while (!this.stopRequested) {
+      if (iter >= maxIterations) break;
       if (step.breakIf) {
         if (evaluate(step.breakIf, this.vars)) break;
       }
@@ -418,6 +462,10 @@ export class PlaybookEngine {
         if (err instanceof BreakSignal) break;
         throw err;
       }
+      iter++;
+      // Bug 9: periodic checkpoint so progress is recorded even if the page
+      // reloads mid-run.
+      if (iter % 10 === 0) this._emitCheckpoint();
     }
   }
 
@@ -426,6 +474,7 @@ export class PlaybookEngine {
     const items = this._resolve(step.items);
     if (!items || !Array.isArray(items)) return;
 
+    let iter = 0;
     for (const item of items) {
       if (this.stopRequested) break;
       if (step.breakIf && evaluate(step.breakIf, this.vars)) break;
@@ -438,6 +487,9 @@ export class PlaybookEngine {
         if (err instanceof BreakSignal) break;
         throw err;
       }
+      iter++;
+      // Bug 9: periodic checkpoint mirrors the loop path.
+      if (iter % 10 === 0) this._emitCheckpoint();
     }
   }
 
@@ -481,5 +533,57 @@ export class PlaybookEngine {
       safe[key] = value;
     }
     return safe;
+  }
+
+  /**
+   * Bounded snapshot of vars for inclusion in previousResults sent to the AI.
+   * Builds on _sanitizeVarsForAI, then truncates strings >500 chars and
+   * arrays >10 items (keeping first 3 + last 3 + length). Bounded context
+   * is critical for token-budget enforcement to remain meaningful — without
+   * a cap, vars accumulate across cycles and the prompt grows unboundedly.
+   * @returns {Object}
+   */
+  _boundedVarsSnapshot() {
+    // Walk raw vars so we own array bounding here. Mirrors the DOM-ref
+    // stripping from _sanitizeVarsForAI but applies tighter caps.
+    const out = {};
+    for (const [key, value] of Object.entries(this.vars)) {
+      if (key === 'settings') continue;
+      if (value instanceof HTMLElement || value instanceof Node) continue;
+      if (Array.isArray(value) && value.length > 0 && value[0] instanceof HTMLElement) {
+        out[key] = `[${value.length} DOM elements]`;
+        continue;
+      }
+      if (typeof value === 'string' && value.length > 500) {
+        out[key] = value.slice(0, 500) + `... [truncated, total ${value.length} chars]`;
+      } else if (Array.isArray(value) && value.length > 10) {
+        const head = value.slice(0, 3);
+        const tail = value.slice(-3);
+        out[key] = { _type: 'array', length: value.length, head, tail };
+      } else {
+        out[key] = value;
+      }
+    }
+    return out;
+  }
+
+  /**
+   * Emit a checkpoint activity log entry mid-run so progress isn't lost
+   * if the page reloads before _finalize. Called from loop and forEach
+   * every Nth iteration. The History tab consumer should treat
+   * 'in_progress' outcomes as partial entries.
+   */
+  _emitCheckpoint() {
+    sendMessage({
+      action: MSG.LOG_ACTIVITY,
+      entry: {
+        playbookId: this.playbook.id,
+        action: 'playbook_checkpoint',
+        outcome: 'in_progress',
+        processedCount: this.vars.processedCount || 0,
+        skippedCount: this.vars.skippedCount || 0,
+        durationMs: Date.now() - this.startTime
+      }
+    }).catch(() => {});
   }
 }

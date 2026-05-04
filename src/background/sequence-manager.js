@@ -10,6 +10,7 @@
  *   items: {
  *     [sequenceId]: {
  *       id, name, steps: [{ delayDays, template, aiType? }],
+ *       settings: { staggerMinutes, quietHoursStart, quietHoursEnd },
  *       contacts: { [profileUrl]: { name, currentStep, status, lastMessageAt, nextMessageAt, messages[] } },
  *       stats: { enrolled, sent, replied, completed },
  *       createdAt, updatedAt
@@ -25,6 +26,10 @@ import * as AI from './ai-client.js';
 const SEQUENCE_ALARM = 'sequence-check';
 const CHECK_INTERVAL_MINUTES = 60; // Check every hour
 
+const DEFAULT_STAGGER_MINUTES = 5;
+const DEFAULT_QUIET_HOURS_START = 8;  // 8am local
+const DEFAULT_QUIET_HOURS_END = 20;   // 8pm local
+
 // Serialize read-modify-write operations on sequence storage
 let lockChain = Promise.resolve();
 function withLock(fn) {
@@ -34,6 +39,40 @@ function withLock(fn) {
   });
   lockChain = next.then(() => {}, () => {});
   return next;
+}
+
+/**
+ * Compute the next valid send time for a sequence, applying its quiet-hours
+ * window (default 8..20 in user's local time). If the candidate timestamp
+ * falls before the quiet-hours start hour on its local day, it is shifted
+ * forward to that day's quiet-hours start. If it falls at or after the end
+ * hour, it is shifted to the next day's quiet-hours start.
+ *
+ * Uses local-time getHours / setHours; date arithmetic uses absolute ms
+ * (Date.now() + N*86400000) so DST transitions cannot skip or duplicate
+ * an hour at the day boundary.
+ *
+ * @param {number} timestamp - Candidate send time (epoch ms)
+ * @param {Object} sequence - Sequence (reads sequence.settings)
+ * @returns {number} Adjusted epoch ms
+ */
+export function nextSendableTime(timestamp, sequence) {
+  const start = sequence?.settings?.quietHoursStart ?? DEFAULT_QUIET_HOURS_START;
+  const end = sequence?.settings?.quietHoursEnd ?? DEFAULT_QUIET_HOURS_END;
+  const d = new Date(timestamp);
+  const hour = d.getHours();
+  if (hour < start) {
+    d.setHours(start, 0, 0, 0);
+    return d.getTime();
+  }
+  if (hour >= end) {
+    // Advance one local day, then snap to start hour.
+    // Use ms arithmetic to avoid DST hour-skip in setDate(getDate()+1).
+    const next = new Date(d.getTime() + 24 * 60 * 60 * 1000);
+    next.setHours(start, 0, 0, 0);
+    return next.getTime();
+  }
+  return timestamp;
 }
 
 /**
@@ -56,9 +95,10 @@ export function initSequenceManager() {
  * @param {string} params.name - Campaign name
  * @param {Object[]} params.steps - [{ delayDays, template, aiType? }]
  * @param {string} [params.goal] - Campaign goal for AI personalization
+ * @param {Object} [params.settings] - { staggerMinutes, quietHoursStart, quietHoursEnd }
  * @returns {Promise<Object>} The created sequence
  */
-export async function createSequence({ name, steps, goal }) {
+export async function createSequence({ name, steps, goal, settings }) {
   return withLock(async () => {
     const sequences = await getSequences();
     const id = `seq_${Date.now().toString(36)}`;
@@ -73,6 +113,11 @@ export async function createSequence({ name, steps, goal }) {
         template: s.template || '',
         aiType: s.aiType || null
       })),
+      settings: {
+        staggerMinutes: settings?.staggerMinutes ?? DEFAULT_STAGGER_MINUTES,
+        quietHoursStart: settings?.quietHoursStart ?? DEFAULT_QUIET_HOURS_START,
+        quietHoursEnd: settings?.quietHoursEnd ?? DEFAULT_QUIET_HOURS_END
+      },
       contacts: {},
       stats: { enrolled: 0, sent: 0, replied: 0, completed: 0 },
       status: 'active',
@@ -89,9 +134,17 @@ export async function createSequence({ name, steps, goal }) {
 
 /**
  * Enroll contacts into a sequence.
+ *
+ * Staggers nextMessageAt across enrolled contacts (default 5 min apart) to
+ * avoid bursting LinkedIn, and shifts each computed time into the sequence's
+ * quiet-hours window (default 8am..8pm local).
+ *
  * @param {string} sequenceId
  * @param {Object[]} contacts - [{ name, profileUrl, headline? }]
- * @returns {Promise<{enrolled: number}>}
+ * @returns {Promise<{enrolled: number, skipped: Object[]}>}
+ *   `skipped` describes any rows that were dropped:
+ *     { reason: 'missing_profileUrl', contact } | { reason: 'duplicate', profileUrl }
+ *   The `enrolled` count is preserved for backward compatibility.
  */
 export async function enrollContacts(sequenceId, contacts) {
   return withLock(async () => {
@@ -99,14 +152,26 @@ export async function enrollContacts(sequenceId, contacts) {
     const sequence = sequences.items?.[sequenceId];
     if (!sequence) throw new Error(`Sequence ${sequenceId} not found`);
 
+    const staggerMs = (sequence.settings?.staggerMinutes ?? DEFAULT_STAGGER_MINUTES) * 60 * 1000;
+    const baseTime = Date.now();
+
     let enrolled = 0;
+    const skipped = [];
+    let staggerIndex = 0;
     for (const contact of contacts) {
       const key = contact.profileUrl;
-      if (!key) continue;
-      if (sequence.contacts[key]) {
-        console.debug(`SequenceManager: skipping duplicate enrollment for ${key}`);
+      if (!key) {
+        skipped.push({ reason: 'missing_profileUrl', contact });
         continue;
       }
+      if (sequence.contacts[key]) {
+        console.debug(`SequenceManager: skipping duplicate enrollment for ${key}`);
+        skipped.push({ reason: 'duplicate', profileUrl: key });
+        continue;
+      }
+
+      const candidate = baseTime + staggerIndex * staggerMs;
+      const sendableMs = nextSendableTime(candidate, sequence);
 
       sequence.contacts[key] = {
         name: contact.name || '',
@@ -116,16 +181,17 @@ export async function enrollContacts(sequenceId, contacts) {
         status: 'active',
         enrolledAt: new Date().toISOString(),
         lastMessageAt: null,
-        nextMessageAt: new Date().toISOString(), // First message: now
+        nextMessageAt: new Date(sendableMs).toISOString(),
         messages: []
       };
       enrolled++;
+      staggerIndex++;
     }
 
     sequence.stats.enrolled += enrolled;
     sequence.updatedAt = new Date().toISOString();
     await saveSequences(sequences);
-    return { enrolled };
+    return { enrolled, skipped };
   });
 }
 
@@ -195,6 +261,17 @@ export async function setSequenceStatus(id, status) {
       await saveSequences(sequences);
     }
   });
+}
+
+/**
+ * Defensive deep copy for handing a contact to downstream consumers.
+ * Without this, callers can mutate `contact.messages` and bypass the lock
+ * that protects sequence storage. structuredClone is available in Node 17+
+ * and all supported Chrome versions; we fall back to JSON for older runtimes.
+ */
+function safeClone(value) {
+  if (typeof structuredClone === 'function') return structuredClone(value);
+  return JSON.parse(JSON.stringify(value));
 }
 
 /**
@@ -268,7 +345,10 @@ export async function processSequences() {
       readyMessages.push({
         sequenceId: seqId,
         profileUrl,
-        contact: { ...contact }, // shallow copy — prevents downstream mutation from bypassing recordMessageSent
+        // Defensive deep copy — without this, mutations to contact.messages by
+        // downstream consumers would alias and potentially corrupt the live
+        // storage snapshot held in `sequences`.
+        contact: safeClone(contact),
         messageText,
         step: contact.currentStep
       });
@@ -332,9 +412,11 @@ export async function recordMessageSent(sequenceId, profileUrl, messageText) {
     // Schedule next message
     if (contact.currentStep < sequence.steps.length) {
       const nextStep = sequence.steps[contact.currentStep];
-      const nextDate = new Date();
-      nextDate.setDate(nextDate.getDate() + (nextStep.delayDays || 3));
-      contact.nextMessageAt = nextDate.toISOString();
+      // Use absolute ms arithmetic instead of setDate(getDate()+N) so DST
+      // boundaries cannot skip or duplicate an hour.
+      const candidateMs = Date.now() + (nextStep.delayDays || 3) * 86400 * 1000;
+      const sendableMs = nextSendableTime(candidateMs, sequence);
+      contact.nextMessageAt = new Date(sendableMs).toISOString();
     } else {
       contact.status = 'completed';
       sequence.stats.completed++;

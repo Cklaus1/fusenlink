@@ -42,6 +42,8 @@ export const MSG = {
   DELETE_DATA: 'deleteData',
   EXPORT_DATA: 'exportData',
   LOG_ACTIVITY: 'logActivity',
+  GET_DAILY_LIMITS: 'getDailyLimits',
+  SET_DAILY_LIMITS: 'setDailyLimits',
 
   // Sequences
   CREATE_SEQUENCE: 'createSequence',

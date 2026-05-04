@@ -19,6 +19,17 @@
  */
 
 (function bridge() {
+  // Only run on actual LinkedIn frames. With Page.addScriptToEvaluateOnNewDocument,
+  // this script fires for EVERY frame on a page, including third-party iframes
+  // (recaptcha, ads, etc.). Polyfilling chrome.* in those frames can break their
+  // own code (recaptcha did `chrome.runtime.getManifest().<field>.toUpperCase()`).
+  try {
+    if (!/(^|\.)linkedin\.com$/i.test(window.location.hostname)) return;
+    // Same-origin LinkedIn iframes (post embeds, Lite views, etc.) shouldn't
+    // get the bridge — only the top-level frame should host the engine.
+    if (window.top !== window) return;
+  } catch { return; /* sandboxed iframes throw on hostname/top access */ }
+
   if (window.__fusenlinkBridgeInstalled) return;
   window.__fusenlinkBridgeInstalled = true;
 

@@ -188,7 +188,14 @@ function itemsToCsv(items) {
   // Filter out null/undefined items and bail if empty
   const valid = items.filter(i => i != null && typeof i === 'object');
   if (valid.length === 0) return '';
-  const headers = Object.keys(valid[0]);
+  // Bug 29: build the header from the union of all rows' keys instead of
+  // just the first row. Schema drift between writes used to silently drop
+  // columns introduced in later items.
+  const headerSet = new Set();
+  for (const item of valid) {
+    for (const k of Object.keys(item)) headerSet.add(k);
+  }
+  const headers = Array.from(headerSet);
   const rows = valid.map(item =>
     headers.map(h => `"${String(item[h] ?? '').replace(/"/g, '""')}"`).join(',')
   );

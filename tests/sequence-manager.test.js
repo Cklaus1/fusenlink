@@ -101,8 +101,12 @@ describe('createSequence', () => {
 });
 
 describe('enrollContacts', () => {
+  // Disable quiet hours for these tests so nextMessageAt is not shifted
+  // forward into the next business day (which is exercised separately).
+  const noQuiet = { staggerMinutes: 0, quietHoursStart: 0, quietHoursEnd: 24 };
+
   test('enrolls N contacts with currentStep=0, status=active, nextMessageAt=~now', async () => {
-    const seq = await createSequence({ name: 'C', steps: [{ template: 't' }] });
+    const seq = await createSequence({ name: 'C', steps: [{ template: 't' }], settings: noQuiet });
     const before = Date.now();
     const result = await enrollContacts(seq.id, [
       { name: 'Alice', profileUrl: 'https://www.linkedin.com/in/alice/' },
@@ -124,7 +128,7 @@ describe('enrollContacts', () => {
   });
 
   test('deduplicates: enrolling same profileUrl twice does not double-enroll', async () => {
-    const seq = await createSequence({ name: 'C', steps: [{ template: 't' }] });
+    const seq = await createSequence({ name: 'C', steps: [{ template: 't' }], settings: noQuiet });
     await enrollContacts(seq.id, [
       { name: 'Alice', profileUrl: 'https://www.linkedin.com/in/alice/' }
     ]);
@@ -132,6 +136,9 @@ describe('enrollContacts', () => {
       { name: 'Alice DUPE', profileUrl: 'https://www.linkedin.com/in/alice/' }
     ]);
     expect(result.enrolled).toBe(0);
+    expect(result.skipped).toEqual([
+      { reason: 'duplicate', profileUrl: 'https://www.linkedin.com/in/alice/' }
+    ]);
 
     const stored = readStored('data.sequences').items[seq.id];
     expect(Object.keys(stored.contacts)).toHaveLength(1);
@@ -147,7 +154,7 @@ describe('enrollContacts', () => {
   });
 
   test('skips contacts without profileUrl', async () => {
-    const seq = await createSequence({ name: 'C', steps: [{ template: 't' }] });
+    const seq = await createSequence({ name: 'C', steps: [{ template: 't' }], settings: noQuiet });
     const r = await enrollContacts(seq.id, [
       { name: 'NoUrl' },
       { name: 'Has', profileUrl: 'https://www.linkedin.com/in/has/' }
@@ -157,8 +164,12 @@ describe('enrollContacts', () => {
 });
 
 describe('markReplied', () => {
+  // Tests in this and subsequent describe blocks don't care about exact send
+  // times — disable quiet-hours/staggering so behavior is deterministic.
+  const noQuiet = { staggerMinutes: 0, quietHoursStart: 0, quietHoursEnd: 24 };
+
   test('idempotent: calling twice for same contact only increments stats.replied once', async () => {
-    const seq = await createSequence({ name: 'C', steps: [{ template: 't' }] });
+    const seq = await createSequence({ name: 'C', steps: [{ template: 't' }], settings: noQuiet });
     const url = 'https://www.linkedin.com/in/alice/';
     await enrollContacts(seq.id, [{ name: 'Alice', profileUrl: url }]);
 
@@ -171,7 +182,7 @@ describe('markReplied', () => {
   });
 
   test('gated by status: a "completed" contact cannot be flipped to "replied"', async () => {
-    const seq = await createSequence({ name: 'C', steps: [{ template: 't' }] });
+    const seq = await createSequence({ name: 'C', steps: [{ template: 't' }], settings: noQuiet });
     const url = 'https://www.linkedin.com/in/alice/';
     await enrollContacts(seq.id, [{ name: 'Alice', profileUrl: url }]);
 
@@ -195,13 +206,16 @@ describe('markReplied', () => {
 });
 
 describe('recordMessageSent', () => {
+  const noQuiet = { staggerMinutes: 0, quietHoursStart: 0, quietHoursEnd: 24 };
+
   test('pushes message, sets lastMessageAt, advances step, schedules next', async () => {
     const seq = await createSequence({
       name: 'C',
       steps: [
         { template: 'first' },
         { template: 'second', delayDays: 5 }
-      ]
+      ],
+      settings: noQuiet
     });
     const url = 'https://www.linkedin.com/in/alice/';
     await enrollContacts(seq.id, [{ name: 'Alice', profileUrl: url }]);
@@ -228,7 +242,7 @@ describe('recordMessageSent', () => {
   });
 
   test('on final step marks contact completed and bumps stats.completed', async () => {
-    const seq = await createSequence({ name: 'C', steps: [{ template: 'only' }] });
+    const seq = await createSequence({ name: 'C', steps: [{ template: 'only' }], settings: noQuiet });
     const url = 'https://www.linkedin.com/in/alice/';
     await enrollContacts(seq.id, [{ name: 'Alice', profileUrl: url }]);
 
@@ -241,7 +255,7 @@ describe('recordMessageSent', () => {
   });
 
   test('no-op when contact not found', async () => {
-    const seq = await createSequence({ name: 'C', steps: [{ template: 't' }] });
+    const seq = await createSequence({ name: 'C', steps: [{ template: 't' }], settings: noQuiet });
     await recordMessageSent(seq.id, 'https://www.linkedin.com/in/nobody/', 'x');
     const stored = readStored('data.sequences').items[seq.id];
     expect(stored.stats.sent).toBe(0);
@@ -249,10 +263,13 @@ describe('recordMessageSent', () => {
 });
 
 describe('processSequences', () => {
+  const noQuiet = { staggerMinutes: 0, quietHoursStart: 0, quietHoursEnd: 24 };
+
   test('returns ready messages without mutating stored state', async () => {
     const seq = await createSequence({
       name: 'C',
-      steps: [{ template: 'Hello {name}!' }]
+      steps: [{ template: 'Hello {name}!' }],
+      settings: noQuiet
     });
     const url = 'https://www.linkedin.com/in/alice/';
     await enrollContacts(seq.id, [{ name: 'Alice', profileUrl: url }]);
@@ -274,7 +291,7 @@ describe('processSequences', () => {
   });
 
   test('excludes contacts not yet due', async () => {
-    const seq = await createSequence({ name: 'C', steps: [{ template: 't' }] });
+    const seq = await createSequence({ name: 'C', steps: [{ template: 't' }], settings: noQuiet });
     const url = 'https://www.linkedin.com/in/future/';
     await enrollContacts(seq.id, [{ name: 'Future', profileUrl: url }]);
 
@@ -289,7 +306,7 @@ describe('processSequences', () => {
   });
 
   test('reaps overrun contacts (currentStep >= steps.length, status=active) to completed', async () => {
-    const seq = await createSequence({ name: 'C', steps: [{ template: 't' }] });
+    const seq = await createSequence({ name: 'C', steps: [{ template: 't' }], settings: noQuiet });
     const url = 'https://www.linkedin.com/in/over/';
     await enrollContacts(seq.id, [{ name: 'Over', profileUrl: url }]);
 
@@ -308,7 +325,7 @@ describe('processSequences', () => {
   });
 
   test('excludes contacts with non-active status', async () => {
-    const seq = await createSequence({ name: 'C', steps: [{ template: 't' }] });
+    const seq = await createSequence({ name: 'C', steps: [{ template: 't' }], settings: noQuiet });
     const url = 'https://www.linkedin.com/in/replied/';
     await enrollContacts(seq.id, [{ name: 'Replied', profileUrl: url }]);
 
@@ -321,7 +338,7 @@ describe('processSequences', () => {
   });
 
   test('skips paused sequences entirely', async () => {
-    const seq = await createSequence({ name: 'C', steps: [{ template: 't' }] });
+    const seq = await createSequence({ name: 'C', steps: [{ template: 't' }], settings: noQuiet });
     const url = 'https://www.linkedin.com/in/alice/';
     await enrollContacts(seq.id, [{ name: 'Alice', profileUrl: url }]);
 
@@ -333,10 +350,13 @@ describe('processSequences', () => {
 });
 
 describe('Concurrent markReplied + recordMessageSent (lock guarantee)', () => {
+  const noQuiet = { staggerMinutes: 0, quietHoursStart: 0, quietHoursEnd: 24 };
+
   test('both writes are visible: messages.length === 1 AND status === "replied"', async () => {
     const seq = await createSequence({
       name: 'C',
-      steps: [{ template: 'first' }, { template: 'second' }]
+      steps: [{ template: 'first' }, { template: 'second' }],
+      settings: noQuiet
     });
     const url = 'https://www.linkedin.com/in/alice/';
     await enrollContacts(seq.id, [{ name: 'Alice', profileUrl: url }]);
@@ -370,7 +390,7 @@ describe('Concurrent markReplied + recordMessageSent (lock guarantee)', () => {
   });
 
   test('many concurrent enrollments do not lose contacts', async () => {
-    const seq = await createSequence({ name: 'C', steps: [{ template: 't' }] });
+    const seq = await createSequence({ name: 'C', steps: [{ template: 't' }], settings: noQuiet });
     const promises = [];
     for (let i = 0; i < 10; i++) {
       promises.push(enrollContacts(seq.id, [
@@ -406,5 +426,168 @@ describe('getSequences default', () => {
   test('returns { items: {} } when nothing stored', async () => {
     const s = await getSequences();
     expect(s).toEqual({ items: {} });
+  });
+});
+
+// --- New behavior: staggering, business hours, defensive copy, error report, DST ---
+
+describe('enrollContacts staggering + quiet hours', () => {
+  function localTimeAt(hour, dayOffset = 0) {
+    const d = new Date();
+    d.setDate(d.getDate() + dayOffset);
+    d.setHours(hour, 0, 0, 0);
+    return d.getTime();
+  }
+
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  test('50 enrollments at 9am: nextMessageAt staggered 5min apart, all within business hours', async () => {
+    // 9:00am local — well inside default 8..20 window.
+    const nineAm = localTimeAt(9);
+    jest.useFakeTimers({ now: nineAm, doNotFake: ['queueMicrotask'] });
+
+    const seq = await createSequence({
+      name: 'Big',
+      steps: [{ template: 't' }]
+      // default settings: stagger=5, quiet 8..20
+    });
+
+    const contacts = Array.from({ length: 50 }, (_, i) => ({
+      name: `User${i}`,
+      profileUrl: `https://www.linkedin.com/in/user${i}/`
+    }));
+    const result = await enrollContacts(seq.id, contacts);
+    expect(result.enrolled).toBe(50);
+
+    const stored = readStored('data.sequences').items[seq.id];
+    const times = contacts.map(c => new Date(stored.contacts[c.profileUrl].nextMessageAt).getTime());
+
+    // First contact at 9:00am, last at 9:00 + 49*5min = 13:05 — still within 8..20.
+    expect(times[0]).toBe(nineAm);
+    for (let i = 1; i < times.length; i++) {
+      expect(times[i] - times[i - 1]).toBe(5 * 60 * 1000);
+      // Each should still be within local business hours (8..20).
+      const hr = new Date(times[i]).getHours();
+      expect(hr).toBeGreaterThanOrEqual(8);
+      expect(hr).toBeLessThan(20);
+    }
+  });
+
+  test('1 enrollment at 11pm shifts nextMessageAt to 8am next day', async () => {
+    const elevenPm = localTimeAt(23); // 23:00 local
+    jest.useFakeTimers({ now: elevenPm, doNotFake: ['queueMicrotask'] });
+
+    const seq = await createSequence({ name: 'Late', steps: [{ template: 't' }] });
+    await enrollContacts(seq.id, [
+      { name: 'Late', profileUrl: 'https://www.linkedin.com/in/late/' }
+    ]);
+
+    const stored = readStored('data.sequences').items[seq.id];
+    const t = new Date(stored.contacts['https://www.linkedin.com/in/late/'].nextMessageAt);
+    expect(t.getHours()).toBe(8);
+    expect(t.getMinutes()).toBe(0);
+
+    // Should be the next local day.
+    const expected = new Date(elevenPm);
+    expected.setDate(expected.getDate() + 1);
+    expected.setHours(8, 0, 0, 0);
+    expect(t.getTime()).toBe(expected.getTime());
+  });
+});
+
+describe('enrollContacts error report (Bug 28)', () => {
+  test('5 valid + 2 missing profileUrl returns enrolled:5 and 2 missing_profileUrl skipped', async () => {
+    const seq = await createSequence({
+      name: 'Mixed',
+      steps: [{ template: 't' }],
+      settings: { staggerMinutes: 0, quietHoursStart: 0, quietHoursEnd: 24 }
+    });
+
+    const contacts = [
+      { name: 'Alice', profileUrl: 'https://www.linkedin.com/in/alice/' },
+      { name: 'NoUrl1' },
+      { name: 'Bob', profileUrl: 'https://www.linkedin.com/in/bob/' },
+      { name: 'NoUrl2' },
+      { name: 'Carol', profileUrl: 'https://www.linkedin.com/in/carol/' },
+      { name: 'Dan', profileUrl: 'https://www.linkedin.com/in/dan/' },
+      { name: 'Eve', profileUrl: 'https://www.linkedin.com/in/eve/' }
+    ];
+    const result = await enrollContacts(seq.id, contacts);
+
+    expect(result.enrolled).toBe(5);
+    expect(result.skipped).toHaveLength(2);
+    expect(result.skipped.every(s => s.reason === 'missing_profileUrl')).toBe(true);
+    // Each skipped row preserves the original contact for diagnostics.
+    expect(result.skipped[0].contact).toEqual({ name: 'NoUrl1' });
+    expect(result.skipped[1].contact).toEqual({ name: 'NoUrl2' });
+  });
+});
+
+describe('recordMessageSent DST-safe arithmetic (Bug 18)', () => {
+  // The implementation now uses absolute ms arithmetic, so a 7-day delay must
+  // produce exactly +7*86400*1000 ms (modulo any subsequent quiet-hours shift).
+  // setDate(getDate()+N) would silently skip/duplicate an hour at DST.
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  test('delayDays:7 across DST fall-back produces a time within 1h of +7 days', async () => {
+    // Anchor at 4am local on a day chosen for the DST transition month.
+    // We don't depend on actual DST; we depend on the implementation using
+    // ms arithmetic — which produces an exact +7d offset regardless of TZ.
+    const anchor = new Date();
+    anchor.setMonth(10); // November (0-indexed)
+    anchor.setDate(2);   // 2nd — common US DST fall-back day
+    anchor.setHours(4, 0, 0, 0);
+    const nowMs = anchor.getTime();
+    jest.useFakeTimers({ now: nowMs, doNotFake: ['queueMicrotask'] });
+
+    // Disable quiet-hours so the +7d candidate isn't shifted.
+    const seq = await createSequence({
+      name: 'DST',
+      steps: [
+        { template: 'first' },
+        { template: 'second', delayDays: 7 }
+      ],
+      settings: { staggerMinutes: 0, quietHoursStart: 0, quietHoursEnd: 24 }
+    });
+    const url = 'https://www.linkedin.com/in/dst/';
+    await enrollContacts(seq.id, [{ name: 'D', profileUrl: url }]);
+
+    await recordMessageSent(seq.id, url, 'first msg');
+
+    const c = readStored('data.sequences').items[seq.id].contacts[url];
+    const next = new Date(c.nextMessageAt).getTime();
+    const expected = nowMs + 7 * 86400 * 1000;
+    // Allow up to 1h tolerance per the spec.
+    expect(Math.abs(next - expected)).toBeLessThanOrEqual(60 * 60 * 1000);
+  });
+});
+
+describe('processSequences defensive deep copy (Bug 3)', () => {
+  test('caller mutating returned contact.messages does not corrupt storage', async () => {
+    const seq = await createSequence({
+      name: 'C',
+      steps: [{ template: 'hi' }],
+      settings: { staggerMinutes: 0, quietHoursStart: 0, quietHoursEnd: 24 }
+    });
+    const url = 'https://www.linkedin.com/in/m/';
+    await enrollContacts(seq.id, [{ name: 'M', profileUrl: url }]);
+
+    const ready = await processSequences();
+    expect(ready).toHaveLength(1);
+
+    // Mutate the returned contact aggressively.
+    ready[0].contact.messages.push({ step: 99, text: 'INJECTED', sentAt: 'never' });
+    ready[0].contact.status = 'mutated';
+    ready[0].contact.currentStep = 999;
+
+    // Storage must be unaffected.
+    const stored = readStored('data.sequences').items[seq.id].contacts[url];
+    expect(stored.messages).toEqual([]);
+    expect(stored.status).toBe('active');
+    expect(stored.currentStep).toBe(0);
   });
 });

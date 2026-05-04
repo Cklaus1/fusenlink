@@ -15,6 +15,9 @@ import { STORAGE_KEYS, DEFAULT_AI_CONFIG } from '../shared/constants.js';
 let cachedConfig = null;
 let configLoading = null; // Prevent concurrent loads
 
+// Bug 13: Track in-flight AbortControllers so saveConfig() can cancel stale requests.
+const inFlightControllers = new Set();
+
 const MAX_RETRIES = 2;
 const RETRY_BASE_MS = 1000;
 const RETRYABLE_STATUSES = new Set([429, 500, 502, 503, 504]);
@@ -71,12 +74,18 @@ async function getConfig() {
 
 /**
  * Save AI config to storage.
+ * Bug 13: Aborts all in-flight requests so they don't return stale-provider data.
  * @param {Object} config
  * @returns {Promise<void>}
  */
 export async function saveConfig(config) {
+  // Abort any in-flight requests so they don't return stale-provider data
+  for (const c of inFlightControllers) {
+    try { c.abort(); } catch {}
+  }
+  inFlightControllers.clear();
   cachedConfig = { ...DEFAULT_AI_CONFIG, ...config };
-  configLoading = null; // Invalidate any in-flight load so next getConfig() uses cachedConfig
+  configLoading = null;
   return new Promise((resolve) => {
     chrome.storage.local.set({ [STORAGE_KEYS.AI_CONFIG]: cachedConfig }, resolve);
   });
@@ -130,6 +139,8 @@ export async function getStatus() {
 /**
  * Produce a pessimistic token-usage estimate when a real response is unavailable.
  * Uses ~4 chars/token for English text. Callers can detect this with `usage.estimated`.
+ * Bug 24 (error path): Use body.max_tokens as the pessimistic completion estimate
+ * so callers don't undercount their budget.
  * @param {Object[]} messages
  * @param {number} [maxTokensRequested]
  * @returns {{prompt_tokens: number, completion_tokens: number, estimated: true}}
@@ -138,7 +149,7 @@ function estimateTokens(messages, maxTokensRequested) {
   const promptChars = messages.reduce((sum, m) => sum + (m.content?.length || 0), 0);
   return {
     prompt_tokens: Math.ceil(promptChars / 4),
-    completion_tokens: Math.min(maxTokensRequested || 0, 256), // partial generation worst case
+    completion_tokens: maxTokensRequested || 1024, // Bug 24: pessimistic — full requested budget
     estimated: true
   };
 }
@@ -192,7 +203,9 @@ export async function chat(params) {
       return response;
     } catch (err) {
       lastError = err;
-      const isRetryable = err.retryable || err.message?.includes('abort');
+      // Abort errors (from timeout or saveConfig) must not be retried
+      const isAbort = err.name === 'AbortError' || err.message?.toLowerCase().includes('aborted');
+      const isRetryable = !isAbort && err.retryable === true;
       if (!isRetryable || attempt === MAX_RETRIES) break;
       await new Promise(r => setTimeout(r, RETRY_BASE_MS * Math.pow(2, attempt)));
     }
@@ -216,7 +229,9 @@ async function fetchOpenAICompat(config, body) {
     headers['Authorization'] = `Bearer ${config.apiKey}`;
   }
 
+  // Bug 13: Register controller so saveConfig() can abort in-flight requests.
   const controller = new AbortController();
+  inFlightControllers.add(controller);
   const timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
 
   let response;
@@ -229,6 +244,7 @@ async function fetchOpenAICompat(config, body) {
     });
   } finally {
     clearTimeout(timeout);
+    inFlightControllers.delete(controller);
   }
 
   if (!response.ok) {
@@ -237,14 +253,37 @@ async function fetchOpenAICompat(config, body) {
     const err = new Error(safeMessage);
     err.retryable = RETRYABLE_STATUSES.has(response.status);
     err.bodyDetail = errorText.slice(0, 500);
-    console.warn(safeMessage, errorText.slice(0, 200));
+    // Bug 19: Gate raw body logging behind debug flag.
+    const isDebug = (typeof globalThis !== 'undefined' && globalThis.FUSENLINK_DEBUG)
+                 || (typeof localStorage !== 'undefined' && localStorage.getItem('fusenlink_debug') === '1');
+    if (isDebug) {
+      console.warn(safeMessage, errorText.slice(0, 200));
+    } else {
+      console.warn(safeMessage); // status code only
+    }
     throw err;
   }
 
   const data = await response.json();
+
+  // Bug 5: HTTP 200 with embedded error body (e.g. OpenRouter "Insufficient credits").
+  if (data.error) {
+    const msg = typeof data.error === 'string' ? data.error : (data.error.message || JSON.stringify(data.error).slice(0, 200));
+    const err = new Error(`Provider returned error: ${msg}`);
+    err.retryable = false; // body errors are usually permanent
+    err.bodyDetail = JSON.stringify(data.error).slice(0, 500);
+    throw err;
+  }
+
   const content = data.choices?.[0]?.message?.content || '';
 
-  return { content, parsed: tryParseJSON(content), usage: data.usage };
+  // Bug 24: Prefer response headers for usage hints when available.
+  const usageFromHeaders = {
+    prompt_tokens: parseInt(response.headers.get('x-ratelimit-prompt-tokens') || '0', 10) || undefined,
+  };
+  const usage = data.usage || usageFromHeaders;
+
+  return { content, parsed: tryParseJSON(content), usage };
 }
 
 /**
@@ -266,7 +305,9 @@ async function fetchAnthropic(config, messages, body) {
     }))
   };
 
+  // Bug 13: Register controller so saveConfig() can abort in-flight requests.
   const controller = new AbortController();
+  inFlightControllers.add(controller);
   const timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
 
   let response;
@@ -283,6 +324,7 @@ async function fetchAnthropic(config, messages, body) {
     });
   } finally {
     clearTimeout(timeout);
+    inFlightControllers.delete(controller);
   }
 
   if (!response.ok) {
@@ -291,11 +333,28 @@ async function fetchAnthropic(config, messages, body) {
     const err = new Error(safeMessage);
     err.retryable = RETRYABLE_STATUSES.has(response.status);
     err.bodyDetail = errorText.slice(0, 500);
-    console.warn(safeMessage, errorText.slice(0, 200));
+    // Bug 19: Gate raw body logging behind debug flag.
+    const isDebug = (typeof globalThis !== 'undefined' && globalThis.FUSENLINK_DEBUG)
+                 || (typeof localStorage !== 'undefined' && localStorage.getItem('fusenlink_debug') === '1');
+    if (isDebug) {
+      console.warn(safeMessage, errorText.slice(0, 200));
+    } else {
+      console.warn(safeMessage); // status code only
+    }
     throw err;
   }
 
   const data = await response.json();
+
+  // Bug 5: Anthropic native API uses {error: {type, message}} shape on HTTP 200 edge cases.
+  if (data.error) {
+    const msg = typeof data.error === 'string' ? data.error : (data.error.message || JSON.stringify(data.error).slice(0, 200));
+    const err = new Error(`Provider returned error: ${msg}`);
+    err.retryable = false;
+    err.bodyDetail = JSON.stringify(data.error).slice(0, 500);
+    throw err;
+  }
+
   const content = data.content?.[0]?.text || '';
 
   return {

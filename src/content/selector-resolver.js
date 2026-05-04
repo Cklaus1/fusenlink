@@ -21,6 +21,8 @@ export class SelectorResolver {
     this._shadowRootCacheTime = 0;
     // Tracks strategy keys that have already emitted a warning to avoid log spam
     this._warnedStrategies = new Set();
+    this._mutationObserver = null;
+    this._installCacheInvalidator();
   }
 
   /**
@@ -36,10 +38,51 @@ export class SelectorResolver {
 
   /**
    * Invalidate the shadow root cache (call after major DOM changes).
+   * Note: does NOT reset _warnedStrategies — invalidateCache fires frequently
+   * (mutation events) and we don't want to re-spam warnings on every DOM change.
+   * _warnedStrategies is reset only in setRegistry (intentional registry swap).
    */
   invalidateCache() {
     this._shadowRootCache = null;
     this._shadowRootCacheTime = 0;
+  }
+
+  /**
+   * Install a MutationObserver on document.body to invalidate the shadow root
+   * cache when direct body children change (covers modal open/close events).
+   * Fixes bug #25: 500ms cache window left stale shadow root refs after modals.
+   */
+  _installCacheInvalidator() {
+    if (typeof MutationObserver === 'undefined') return; // jsdom may lack it
+    this._mutationObserver = new MutationObserver(() => {
+      this.invalidateCache();
+    });
+    const observeBody = () => {
+      try {
+        this._mutationObserver.observe(document.body, {
+          childList: true,
+          subtree: false  // don't fire on every nested change; just direct body children
+        });
+      } catch (err) {
+        // ignore — body may not be ready
+      }
+    };
+    if (document.body) {
+      observeBody();
+    } else if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', observeBody);
+    }
+  }
+
+  /**
+   * Disconnect the MutationObserver and release resources.
+   * Call when the resolver is no longer needed to avoid leaks.
+   */
+  dispose() {
+    if (this._mutationObserver) {
+      this._mutationObserver.disconnect();
+      this._mutationObserver = null;
+    }
   }
 
   /**

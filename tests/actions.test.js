@@ -125,6 +125,120 @@ describe('ExtractAll action', () => {
   });
 });
 
+describe('ExtractAll multi-value (Bug 10)', () => {
+  beforeEach(() => { document.body.innerHTML = ''; });
+
+  test('multiple: true captures all matching child elements per field', async () => {
+    document.body.innerHTML = `
+      <div class="card">
+        <span class="skill">Python</span>
+        <span class="skill">Go</span>
+        <span class="skill">Rust</span>
+      </div>
+      <div class="card">
+        <span class="skill">JavaScript</span>
+      </div>
+    `;
+    const registry = {
+      cards: { strategies: [{ type: 'css', value: '.card' }] },
+      skill: { strategies: [{ type: 'css', value: '.skill' }] }
+    };
+    const playbook = makePlaybook([
+      {
+        action: 'extractAll',
+        var: 'cards',
+        containerSelector: 'cards',
+        fields: {
+          skills: { childSelector: 'skill', attribute: 'textContent', multiple: true }
+        }
+      }
+    ]);
+    const engine = new PlaybookEngine(playbook, registry);
+    await engine.run();
+    expect(engine.vars.cards).toHaveLength(2);
+    expect(engine.vars.cards[0].skills).toEqual(['Python', 'Go', 'Rust']);
+    expect(engine.vars.cards[1].skills).toEqual(['JavaScript']);
+  });
+
+  test('without multiple still returns a single value (backwards compat)', async () => {
+    document.body.innerHTML = `
+      <div class="card"><span class="t">A</span><span class="t">B</span></div>
+    `;
+    const registry = {
+      cards: { strategies: [{ type: 'css', value: '.card' }] },
+      t: { strategies: [{ type: 'css', value: '.t' }] }
+    };
+    const playbook = makePlaybook([
+      {
+        action: 'extractAll',
+        var: 'data',
+        containerSelector: 'cards',
+        fields: {
+          first: { childSelector: 't', attribute: 'textContent' }
+        }
+      }
+    ]);
+    const engine = new PlaybookEngine(playbook, registry);
+    await engine.run();
+    expect(engine.vars.data[0].first).toBe('A');
+  });
+});
+
+describe('aiCall error propagation (Bug 35)', () => {
+  let originalSendMessage;
+  beforeEach(() => {
+    originalSendMessage = chrome.runtime.sendMessage.getMockImplementation();
+  });
+  afterEach(() => {
+    chrome.runtime.sendMessage.mockImplementation(originalSendMessage);
+  });
+
+  test('aiCall with response.error and breakOnError=true (default) throws and surfaces lastError', async () => {
+    chrome.runtime.sendMessage.mockImplementation((message, callback) => {
+      if (message.action === 'aiRequest') {
+        callback({ error: 'ECONNREFUSED' });
+      } else {
+        callback({ success: true });
+      }
+    });
+
+    const playbook = makePlaybook([
+      { action: 'aiCall', aiType: 'rewrite', input: 'hi', var: 'out' },
+      { action: 'setVar', var: 'after', value: 'never' }
+    ]);
+    const engine = new PlaybookEngine(playbook, emptyRegistry);
+    const result = await engine.run();
+
+    // The throw is caught at the engine level, recorded as runError.
+    expect(result.error).toContain('aiCall failed');
+    // Subsequent steps should NOT have run.
+    expect(engine.vars.after).toBeUndefined();
+    // lastError surfaced for downstream introspection.
+    expect(engine.vars.lastError).toContain('aiCall failed');
+  });
+
+  test('aiCall with breakOnError=false stores {error:...} and continues', async () => {
+    chrome.runtime.sendMessage.mockImplementation((message, callback) => {
+      if (message.action === 'aiRequest') {
+        callback({ error: 'rate limited' });
+      } else {
+        callback({ success: true });
+      }
+    });
+
+    const playbook = makePlaybook([
+      { action: 'aiCall', aiType: 'rewrite', input: 'hi', var: 'out', breakOnError: false },
+      { action: 'setVar', var: 'after', value: 'reached' }
+    ]);
+    const engine = new PlaybookEngine(playbook, emptyRegistry);
+    const result = await engine.run();
+
+    expect(result.error).toBeUndefined();
+    expect(engine.vars.out).toEqual({ error: 'rate limited' });
+    expect(engine.vars.after).toBe('reached');
+  });
+});
+
 describe('AppendArray action', () => {
   test('merges arrays', async () => {
     const playbook = makePlaybook([

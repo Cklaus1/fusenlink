@@ -38,8 +38,50 @@ export function initScheduler() {
     });
   }
 
+  // Detect missed runs on every service-worker restart (covers SW death + laptop sleep)
+  detectAndCatchUpMissedRuns();
+
+  // Also detect missed runs when Chrome starts up (cold boot / profile load)
+  chrome.runtime.onStartup.addListener(() => {
+    detectAndCatchUpMissedRuns();
+  });
+
   // Restore alarms from saved schedules
   restoreSchedules();
+}
+
+/**
+ * Detect schedules that were missed while the laptop was asleep or the service
+ * worker was killed. Logs each missed window to the activity log so the History
+ * tab shows it. If the schedule has `catchUp: true`, fires ONE catch-up run.
+ */
+export async function detectAndCatchUpMissedRuns() {
+  const schedules = await getSchedules();
+  for (const [playbookId, config] of Object.entries(schedules)) {
+    if (!config.enabled || !config.lastRun) continue;
+
+    const sinceMs = Date.now() - new Date(config.lastRun).getTime();
+    const intervalMs = config.intervalMinutes * 60 * 1000;
+
+    if (sinceMs > intervalMs * 1.5) {
+      // Log the missed window regardless of catchUp setting
+      try {
+        await Data.logActivity({
+          playbookId,
+          action: 'scheduled_missed',
+          outcome: 'skipped',
+          details: { sinceMs, intervalMs }
+        });
+      } catch { /* non-fatal */ }
+
+      // Only fire a catch-up run if the user opted in
+      if (config.catchUp) {
+        triggerPlaybook(playbookId).catch(err =>
+          console.warn(`[scheduler] Catch-up failed for "${playbookId}":`, err.message)
+        );
+      }
+    }
+  }
 }
 
 /**

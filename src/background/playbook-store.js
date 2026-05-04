@@ -25,12 +25,16 @@ function withLock(key, fn) {
 /**
  * Initialize storage with defaults on first install or version upgrade.
  * Also migrates v1 settings from chrome.storage.sync to chrome.storage.local.
+ * Bug 31: After first-install seed, walk DEFAULT_PLAYBOOKS and
+ * DEFAULT_SELECTOR_REGISTRIES and replace stored entries whose shipped
+ * version exceeds the stored version. User-modified custom playbooks
+ * (IDs not in DEFAULT_PLAYBOOKS) are preserved.
  */
 export async function initializeDefaults() {
   // Migrate v1 settings from sync → local (v1 used chrome.storage.sync)
   await migrateV1Settings();
 
-  return new Promise((resolve) => {
+  await new Promise((resolve) => {
     chrome.storage.local.get([STORAGE_KEYS.PLAYBOOKS, STORAGE_KEYS.SELECTORS, STORAGE_KEYS.SETTINGS], (result) => {
       const updates = {};
 
@@ -52,6 +56,82 @@ export async function initializeDefaults() {
         resolve();
       }
     });
+  });
+
+  // Bug 31: version-aware migrations on every startup. These are no-ops
+  // when nothing changed; otherwise they replace stored defaults whose
+  // shipped version has bumped. Bug 33: each migration appends a record
+  // to meta.migrations.
+  const playbookChanges = await migrateDefaults();
+  const selectorChanges = await migrateSelectors();
+  if (playbookChanges.length > 0 || selectorChanges.length > 0) {
+    await recordMigration({
+      playbooks: playbookChanges,
+      selectors: selectorChanges
+    });
+  }
+}
+
+/**
+ * Bug 31: Replace stored playbook defaults when shipped version is newer.
+ * Returns list of migrated IDs (with new version) for migration log.
+ */
+async function migrateDefaults() {
+  return withLock(STORAGE_KEYS.PLAYBOOKS, async () => {
+    const stored = await getAllPlaybooks();
+    const changed = [];
+    for (const [id, shipped] of Object.entries(DEFAULT_PLAYBOOKS)) {
+      const existing = stored[id];
+      if (!existing || (shipped.version || 0) > (existing.version || 0)) {
+        stored[id] = shipped;
+        changed.push(`${id}:v${shipped.version || 0}`);
+      }
+    }
+    if (changed.length > 0) {
+      await new Promise(r => chrome.storage.local.set({ [STORAGE_KEYS.PLAYBOOKS]: stored }, r));
+    }
+    return changed;
+  });
+}
+
+/**
+ * Bug 31: Replace stored selector registries when shipped version is newer.
+ * Returns list of migrated registry keys for migration log.
+ */
+async function migrateSelectors() {
+  return withLock(STORAGE_KEYS.SELECTORS, async () => {
+    const stored = await new Promise(r => chrome.storage.local.get(STORAGE_KEYS.SELECTORS, x => r(x[STORAGE_KEYS.SELECTORS] || {})));
+    const changed = [];
+    for (const [key, shipped] of Object.entries(DEFAULT_SELECTOR_REGISTRIES)) {
+      const existing = stored[key];
+      if (!existing || (shipped.version || 0) > (existing.version || 0)) {
+        stored[key] = shipped;
+        changed.push(`${key}:v${shipped.version || 0}`);
+      }
+    }
+    if (changed.length > 0) {
+      await new Promise(r => chrome.storage.local.set({ [STORAGE_KEYS.SELECTORS]: stored }, r));
+    }
+    return changed;
+  });
+}
+
+/**
+ * Bug 33: append a migration record to meta.migrations. Append-only,
+ * capped at the last 10 entries so the meta blob can't grow unbounded.
+ */
+async function recordMigration(changes) {
+  return withLock('meta.migrations', async () => {
+    const stored = await new Promise(r => chrome.storage.local.get('meta.migrations', x => r(x['meta.migrations'] || [])));
+    const history = Array.isArray(stored) ? stored : [];
+    history.push({
+      version: chrome.runtime?.getManifest?.()?.version || 'unknown',
+      migratedAt: new Date().toISOString(),
+      changes
+    });
+    // Cap at last 10
+    const capped = history.slice(-10);
+    await new Promise(r => chrome.storage.local.set({ 'meta.migrations': capped }, r));
   });
 }
 

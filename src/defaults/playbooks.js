@@ -6,7 +6,7 @@
 export const DEFAULT_PLAYBOOKS = {
   'accept-invites': {
     id: 'accept-invites',
-    version: 1,
+    version: 2,
     name: 'Accept All Invitations',
     description: 'Bulk-accept pending LinkedIn connection invitations',
     urlPattern: 'linkedin\\.com/mynetwork/invitation-manager/',
@@ -80,7 +80,7 @@ export const DEFAULT_PLAYBOOKS = {
 
   'deny-invites': {
     id: 'deny-invites',
-    version: 1,
+    version: 2,
     name: 'Deny All Invitations',
     description: 'Bulk-deny/ignore pending LinkedIn connection invitations',
     urlPattern: 'linkedin\\.com/mynetwork/invitation-manager/',
@@ -725,11 +725,11 @@ export const DEFAULT_PLAYBOOKS = {
 
   'harvest-commenters': {
     id: 'harvest-commenters',
-    version: 1,
+    version: 3,
     name: 'Harvest Post Commenters',
     description: 'Extract everyone who commented on a LinkedIn post into your lead list',
-    urlPattern: 'linkedin\\.com/',
-    selectors: 'linkedin.feed',
+    urlPattern: 'linkedin\\.com/(feed/update|posts)/',
+    selectors: 'linkedin.posts',
     buttonLabel: 'Extract Commenters',
     trustLevel: 'auto',
     settings: { maxComments: 100, delayMs: 500 },

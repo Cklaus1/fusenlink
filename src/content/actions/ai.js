@@ -32,11 +32,23 @@ export function extractAll(step, engine) {
   for (const container of containers) {
     const item = {};
     for (const [fieldName, fieldDef] of Object.entries(step.fields || {})) {
-      const el = engine.resolver.findOne(fieldDef.childSelector, { scopeElement: container });
-      if (fieldDef.attribute === 'exists') {
-        item[fieldName] = el !== null;
+      // Bug 10: support multi-value fields. Without this, multi-valued
+      // LinkedIn data (e.g., a list of skills/positions per card) collapses
+      // to the first match per field.
+      if (fieldDef.multiple) {
+        const els = engine.resolver.findAll(fieldDef.childSelector, { scopeElement: container });
+        if (fieldDef.attribute === 'exists') {
+          item[fieldName] = els.map(() => true);
+        } else {
+          item[fieldName] = els.map(el => engine._extractAttribute(el, fieldDef.attribute));
+        }
       } else {
-        item[fieldName] = el ? engine._extractAttribute(el, fieldDef.attribute) : null;
+        const el = engine.resolver.findOne(fieldDef.childSelector, { scopeElement: container });
+        if (fieldDef.attribute === 'exists') {
+          item[fieldName] = el !== null;
+        } else {
+          item[fieldName] = el ? engine._extractAttribute(el, fieldDef.attribute) : null;
+        }
       }
     }
     items.push(item);
@@ -66,6 +78,11 @@ export async function aiCall(step, engine, Overlay) {
     Overlay.updateStatus(hint);
     console.error('aiCall error:', response.error);
     if (step.var) engine.vars[step.var] = { error: response.error };
+    // Bug 35: by default, propagate the error so downstream steps don't
+    // operate on the {error: ...} sentinel. Opt out with breakOnError: false.
+    if (step.breakOnError !== false) {
+      throw new Error(`aiCall failed: ${response.error}`);
+    }
   } else if (step.var) {
     engine.vars[step.var] = response?.parsed || response?.content || response;
   }

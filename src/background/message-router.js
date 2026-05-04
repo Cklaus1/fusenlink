@@ -4,6 +4,7 @@
  */
 
 import { MSG } from '../shared/messages.js';
+import { DEFAULT_DAILY_LIMITS } from '../shared/constants.js';
 import * as Store from './playbook-store.js';
 import { getSchedules, setSchedule, deleteSchedule } from './scheduler.js';
 import * as AI from './ai-client.js';
@@ -212,6 +213,23 @@ export async function handleMessage(message, sender, sendResponse) {
           message.options || {}
         );
         sendResponse(result);
+        break;
+      }
+
+      // Bug 14: expose dailyLimits via message-router so CLI can manage them
+      case MSG.GET_DAILY_LIMITS: {
+        const result = await new Promise(r => chrome.storage.local.get('dailyLimits', r));
+        sendResponse(result.dailyLimits || DEFAULT_DAILY_LIMITS);
+        break;
+      }
+
+      case MSG.SET_DAILY_LIMITS: {
+        if (message.limits) {
+          await new Promise(r => chrome.storage.local.set({ dailyLimits: message.limits }, r));
+          sendResponse({ success: true });
+        } else {
+          sendResponse({ success: false, error: 'No limits provided' });
+        }
         break;
       }
 

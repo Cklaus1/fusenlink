@@ -23,6 +23,27 @@ const SYNC_INTERVAL_MINUTES = 60; // Hourly
 let syncInProgress = false; // Guard against concurrent syncs
 
 /**
+ * Bug 23: Normalize cohort.members so consumers always see
+ * [{name, linkedin, company}]. Members may arrive as bare strings (legacy),
+ * partial objects, or already-normalized objects. Entries without a linkedin
+ * URL are dropped — they can't be matched against connection maps anyway.
+ * @param {any} members
+ * @returns {Array<{name:string, linkedin:string, company:string}>}
+ */
+function normalizeMembers(members) {
+  if (!Array.isArray(members)) return [];
+  return members.map(m => {
+    if (typeof m === 'string') return { name: '', linkedin: m, company: '' };
+    if (!m || typeof m !== 'object') return { name: '', linkedin: '', company: '' };
+    return {
+      name: m.name || '',
+      linkedin: m.linkedin || '',
+      company: m.company || ''
+    };
+  }).filter(m => m.linkedin);
+}
+
+/**
  * Validate that a URL is a safe HTTPS endpoint.
  * Prevents exfiltration via protocol-relative or non-HTTPS URLs.
  * @param {string} url
@@ -90,11 +111,13 @@ async function _doSync() {
 
     const remote = await response.json();
 
-    // Merge remote into local — remote is authoritative for shared fields
+    // Merge remote into local — remote is authoritative for shared fields.
+    // Bug 23: normalize members so the merged shape is always
+    // [{name, linkedin, company}] regardless of what the remote sent.
     const merged = {
       ...config,
       ...remote,
-      members: remote.members || config.members || [],
+      members: normalizeMembers(remote.members || config.members || []),
       syncUrl: config.syncUrl, // Preserve local syncUrl
       syncError: null,
       lastSynced: new Date().toISOString()
@@ -109,23 +132,32 @@ async function _doSync() {
 
 /**
  * Get the full cohort config.
+ * Bug 23: members is normalized on read so consumers always see
+ * [{name, linkedin, company}].
  * @returns {Promise<Object>}
  */
 export function getCohortConfig() {
   return new Promise(resolve => {
     chrome.storage.local.get(STORAGE_KEYS.COHORT, (result) => {
-      resolve(result[STORAGE_KEYS.COHORT] || { members: [] });
+      const cfg = result[STORAGE_KEYS.COHORT] || { members: [] };
+      cfg.members = normalizeMembers(cfg.members);
+      resolve(cfg);
     });
   });
 }
 
 /**
- * Save cohort config.
+ * Save cohort config. Bug 23: normalize members before write so the stored
+ * shape is consistent regardless of caller.
  * @param {Object} config
  */
 export function saveCohortConfig(config) {
+  const normalized = {
+    ...config,
+    members: normalizeMembers(config && config.members)
+  };
   return new Promise(resolve => {
-    chrome.storage.local.set({ [STORAGE_KEYS.COHORT]: config }, resolve);
+    chrome.storage.local.set({ [STORAGE_KEYS.COHORT]: normalized }, resolve);
   });
 }
 

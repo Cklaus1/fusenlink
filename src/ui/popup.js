@@ -87,10 +87,16 @@ chrome.storage.local.get('dailyLimits', (result) => {
 // ==================== RUNNING STATE (#3) ====================
 
 function checkRunningState() {
+  // Bug 30: show placeholder banner immediately so user sees "Checking…" instead of stale "Ready"
+  runningText.textContent = 'Checking status...';
+  runningBanner.classList.add('active');
+
   chrome.runtime.sendMessage({ action: 'getPlaybookStatus' }, (result) => {
     if (!chrome.runtime.lastError && result?.status === 'running') {
-      runningBanner.classList.add('active');
       runningText.textContent = 'Playbook running...';
+    } else {
+      // Status is idle (or unknown) — remove the placeholder
+      runningBanner.classList.remove('active');
     }
   });
 }
@@ -107,14 +113,16 @@ function loadPlaybooks() {
     playbooksList.innerHTML = '';
 
     // Fetch today's counts for all playbooks in one pass
+    // Bug 21: use limit:0 (falsy → no slice in data-store) so old entries don't fall off
     chrome.runtime.sendMessage({
-      action: 'getData', collection: 'activityLog', options: { limit: 500 }
+      action: 'getData', collection: 'activityLog', options: { limit: 0 }
     }, (logData) => {
       const todayCounts = {};
       const today = new Date().toISOString().slice(0, 10);
+      // Bug 2: sum processedCount across all outcomes (not just 'complete') to prevent stop-and-retry bypass
       for (const e of (logData?.entries || [])) {
-        if (e.timestamp?.startsWith(today) && e.outcome === 'complete') {
-          todayCounts[e.playbookId] = (todayCounts[e.playbookId] || 0) + 1;
+        if (e.timestamp?.startsWith(today)) {
+          todayCounts[e.playbookId] = (todayCounts[e.playbookId] || 0) + (e.processedCount || 0);
         }
       }
 
@@ -235,7 +243,21 @@ async function runPlaybook(id, pb, btn) {
     if (chrome.runtime.lastError) {
       setStatus(chrome.runtime.lastError.message, true);
     } else if (result?.error) {
-      if (isAIError(result.error)) {
+      if (result.error === 'already_running') {
+        // Bug 30: friendly message + button to focus the running tab
+        statusEl.textContent = '';
+        statusEl.appendChild(document.createTextNode('Already running \u2014 '));
+        const focusBtn = document.createElement('button');
+        focusBtn.className = 'link-btn';
+        focusBtn.textContent = 'Open LinkedIn tab';
+        focusBtn.addEventListener('click', () => {
+          chrome.tabs.query({ url: '*://*.linkedin.com/*' }, (tabs) => {
+            if (tabs?.[0]?.id) chrome.tabs.update(tabs[0].id, { active: true });
+          });
+          window.close();
+        });
+        statusEl.appendChild(focusBtn);
+      } else if (isAIError(result.error)) {
         statusEl.textContent = '';
         statusEl.appendChild(document.createTextNode('AI unreachable \u2014 '));
         const fixLink = document.createElement('a');
@@ -281,13 +303,15 @@ function loadPipeline() {
     const logEntries = activityLog?.entries || [];
     const replies = logEntries.filter(e => e.action === 'reply_detected').length;
 
-    // Count across all sequences too
+    // Bug 22: count distinct contacts across all sequences (stats.sent double-counts multi-step contacts)
     let seqContacted = 0, seqReplied = 0, seqCompleted = 0;
     const seqItems = sequences?.items || {};
     for (const seq of Object.values(seqItems)) {
-      seqContacted += seq.stats?.sent || 0;
-      seqReplied += seq.stats?.replied || 0;
-      seqCompleted += seq.stats?.completed || 0;
+      for (const c of Object.values(seq.contacts || {})) {
+        if (c.messages?.length > 0) seqContacted++;
+        if (c.status === 'replied') seqReplied++;
+        if (c.status === 'completed') seqCompleted++;
+      }
     }
 
     const totalContacted = contacted + seqContacted;
@@ -744,13 +768,16 @@ function exportData(collection, format, label) {
 
 function getTodayCount(playbookId) {
   return new Promise(resolve => {
+    // Bug 21: limit:0 → no slice in data-store so historical entries don't crowd out today's
+    // Bug 2: sum processedCount across all outcomes, not just 'complete', to block stop-and-retry bypass
     chrome.runtime.sendMessage({
-      action: 'getData', collection: 'activityLog', options: { limit: 200 }
+      action: 'getData', collection: 'activityLog', options: { limit: 0 }
     }, (data) => {
       const today = new Date().toISOString().slice(0, 10);
-      resolve((data?.entries || []).filter(e =>
-        e.playbookId === playbookId && e.timestamp?.startsWith(today) && e.outcome === 'complete'
-      ).length);
+      const total = (data?.entries || [])
+        .filter(e => e.playbookId === playbookId && e.timestamp?.startsWith(today))
+        .reduce((sum, e) => sum + (e.processedCount || 0), 0);
+      resolve(total);
     });
   });
 }

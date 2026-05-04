@@ -96,8 +96,15 @@ function validateSteps(steps, errors, path) {
       if (step.onTrue) validateSteps(step.onTrue, errors, `${stepPath}.onTrue`);
       if (step.onFalse) validateSteps(step.onFalse, errors, `${stepPath}.onFalse`);
     }
-    if (step.action === 'forEach' && !step.itemVar) {
-      errors.push(`${stepPath}: forEach requires "itemVar"`);
+    // Bug 11: loops without a termination guard silently spin forever.
+    if (step.action === 'loop') {
+      if (!step.breakIf && typeof step.maxIterations !== 'number') {
+        errors.push(`${stepPath}: loop requires "breakIf" expression OR "maxIterations" number`);
+      }
+    }
+    if (step.action === 'forEach') {
+      if (!step.items) errors.push(`${stepPath}: forEach requires "items"`);
+      if (!step.itemVar) errors.push(`${stepPath}: forEach requires "itemVar"`);
     }
   }
 }
