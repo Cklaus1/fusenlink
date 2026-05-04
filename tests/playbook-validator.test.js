@@ -278,7 +278,7 @@ describe('Playbook Validator', () => {
       expect(droppedSettings).toEqual({ c: 3 });
     });
 
-    test('replaces ship-controlled fields with shipped values', () => {
+    test('replaces ship-controlled fields with shipped values; preserves user-customized urlPattern/buttonLabel/description (Bug 2)', () => {
       const shipped = {
         id: 'pb',
         version: 2,
@@ -302,16 +302,59 @@ describe('Playbook Validator', () => {
         settings: { a: 99 }
       };
       const { merged, droppedSettings } = mergePlaybookFields(shipped, stored);
+      // Truly ship-controlled fields are replaced.
       expect(merged.name).toBe('New Name');
-      expect(merged.description).toBe('new desc');
-      expect(merged.urlPattern).toBe('new');
-      expect(merged.buttonLabel).toBe('New');
       expect(merged.selectors).toBe('new.key');
       expect(merged.steps).toEqual(shipped.steps);
       expect(merged.version).toBe(2);
+      // Bug 2: urlPattern/buttonLabel/description are user-customizable —
+      // when stored differs from shipped, the stored value is preserved.
+      expect(merged.urlPattern).toBe('old');
+      expect(merged.buttonLabel).toBe('Old');
+      expect(merged.description).toBe('old desc');
       expect(merged.settings).toEqual({ a: 99 });
       // No keys were dropped — every stored key still exists in shipped.
       expect(droppedSettings).toEqual({});
+    });
+
+    test('Bug 2: takes shipped urlPattern/buttonLabel/description when stored matches shipped (i.e. user did not customize)', () => {
+      const shipped = {
+        id: 'pb',
+        version: 2,
+        name: 'n',
+        urlPattern: 'same',
+        buttonLabel: 'Same',
+        description: 'same',
+        steps: [{ action: 'log' }]
+      };
+      const stored = {
+        id: 'pb',
+        version: 1,
+        name: 'n',
+        urlPattern: 'same',
+        buttonLabel: 'Same',
+        description: 'same',
+        steps: [{ action: 'log' }]
+      };
+      const { merged } = mergePlaybookFields(shipped, stored);
+      expect(merged.urlPattern).toBe('same');
+      expect(merged.buttonLabel).toBe('Same');
+      expect(merged.description).toBe('same');
+    });
+
+    test('Bug 2: preserves user urlPattern when stored differs from shipped', () => {
+      const shipped = {
+        id: 'pb', version: 2, name: 'n',
+        urlPattern: 'linkedin\\.com/new',
+        steps: [{ action: 'log' }]
+      };
+      const stored = {
+        id: 'pb', version: 1, name: 'n',
+        urlPattern: 'linkedin\\.com/custom',
+        steps: [{ action: 'log' }]
+      };
+      const { merged } = mergePlaybookFields(shipped, stored);
+      expect(merged.urlPattern).toBe('linkedin\\.com/custom');
     });
 
     test('handles missing settings on either side', () => {
@@ -434,6 +477,21 @@ describe('Playbook Validator', () => {
       expect(errors).toEqual([]);
     });
 
+    // Bug 1: previously only `version` was skipped, so registries with
+    // documentation/metadata fields like description/notes/updatedAt were
+    // rejected (they look like malformed entries). Skip them all.
+    test('Bug 1: skips description/notes/updatedAt metadata keys', () => {
+      const { valid, errors } = validateSelectorRegistry({
+        version: 1,
+        description: 'LinkedIn invitation manager selectors',
+        notes: 'Updated for the 2026 layout',
+        updatedAt: '2026-01-15T00:00:00Z',
+        thing: { strategies: [{ type: 'css', value: 'a' }] }
+      });
+      expect(valid).toBe(true);
+      expect(errors).toEqual([]);
+    });
+
     // CI guard: every shipped registry must validate.
     for (const [key, reg] of Object.entries(DEFAULT_SELECTOR_REGISTRIES)) {
       test(`DEFAULT_SELECTOR_REGISTRIES[${key}] is valid`, () => {
@@ -486,8 +544,10 @@ describe('Playbook Validator', () => {
       expect(looksStaticallyFalse(42)).toBe(false);
     });
 
-    test('rejects loop with breakIf:"false" via validatePlaybook', () => {
-      const { valid, errors } = validatePlaybook({
+    // Bug 27: a literal `breakIf: 'false'` is a warning, not an error.
+    // Authors use it as a placeholder while iterating on a playbook.
+    test('warns (does not reject) loop with breakIf:"false" via validatePlaybook', () => {
+      const { valid, errors, warnings } = validatePlaybook({
         ...validPlaybook,
         steps: [{
           action: 'loop',
@@ -495,12 +555,13 @@ describe('Playbook Validator', () => {
           steps: [{ action: 'log', message: 'spin' }]
         }]
       });
-      expect(valid).toBe(false);
-      expect(errors.some(e => e.includes('never break'))).toBe(true);
+      expect(valid).toBe(true);
+      expect(errors).toEqual([]);
+      expect(warnings.some(w => w.includes('never break'))).toBe(true);
     });
 
     test('accepts loop with a $variable-driven breakIf', () => {
-      const { valid, errors } = validatePlaybook({
+      const { valid, errors, warnings } = validatePlaybook({
         ...validPlaybook,
         steps: [{
           action: 'loop',
@@ -510,6 +571,65 @@ describe('Playbook Validator', () => {
       });
       expect(valid).toBe(true);
       expect(errors).toEqual([]);
+      expect(warnings).toEqual([]);
+    });
+
+    // Bug 4: validator must not import from src/content/. After the fix
+    // looksStaticallyFalse only matches a tiny set of well-known literals.
+    test('Bug 4: only matches well-known static-false literals (no expression evaluator)', () => {
+      // Composed expressions that the old evaluator would have collapsed
+      // are no longer caught — that's the documented trade-off.
+      expect(looksStaticallyFalse('0 + 0')).toBe(false);
+      expect(looksStaticallyFalse('false || false')).toBe(false);
+      expect(looksStaticallyFalse('null ?? false')).toBe(false);
+      // But the trivial literals still work.
+      expect(looksStaticallyFalse('false')).toBe(true);
+      expect(looksStaticallyFalse('0')).toBe(true);
+      expect(looksStaticallyFalse('null')).toBe(true);
+      expect(looksStaticallyFalse('undefined')).toBe(true);
+      expect(looksStaticallyFalse("''")).toBe(true);
+      expect(looksStaticallyFalse('""')).toBe(true);
+    });
+
+    test('Bug 4: validator does not import from src/content/expression.js', () => {
+      // Hard guard — read the validator source and assert the bad import
+      // is gone. If a future change re-introduces it, this test fires.
+      // eslint-disable-next-line global-require
+      const fs = require('fs');
+      const path = require('path');
+      const src = fs.readFileSync(
+        path.resolve(__dirname, '../src/shared/playbook-validator.js'),
+        'utf8'
+      );
+      expect(src).not.toMatch(/from ['"]\.\.\/content\/expression\.js['"]/);
+    });
+  });
+
+  // Bug 27: validatePlaybook returns a `warnings` array alongside errors.
+  describe('Bug 27: warnings vs errors', () => {
+    test('returns a warnings array on a valid playbook', () => {
+      const result = validatePlaybook(validPlaybook);
+      expect(Array.isArray(result.warnings)).toBe(true);
+      expect(result.warnings).toEqual([]);
+    });
+
+    test('returns a warnings array even when invalid', () => {
+      const result = validatePlaybook(null);
+      expect(Array.isArray(result.warnings)).toBe(true);
+    });
+
+    test('breakIf:"false" feeds warnings, not errors', () => {
+      const { valid, errors, warnings } = validatePlaybook({
+        ...validPlaybook,
+        steps: [{
+          action: 'loop',
+          breakIf: 'false',
+          steps: [{ action: 'log', message: 'spin' }]
+        }]
+      });
+      expect(valid).toBe(true);
+      expect(errors).toEqual([]);
+      expect(warnings.length).toBeGreaterThan(0);
     });
   });
 

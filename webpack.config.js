@@ -2,6 +2,11 @@ const path = require('path');
 
 module.exports = {
   mode: 'production',
+  // Bug 24: explicitly disable source maps for shipping bundles. Production mode
+  // already omits them by default, but this makes the intent unambiguous and
+  // prevents any future mode change from accidentally enabling source map URLs
+  // that cause DevTools 404 noise in the extension context.
+  devtool: false,
   entry: {
     background: './src/background/index.js',
     content: './src/content/index.js',

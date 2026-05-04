@@ -3,15 +3,15 @@
  * the CLI's wrapper layer. Useful for diagnosing where the shell.js path
  * differs from debug.js.
  *
- * Usage:  node run-once.js <playbook-id> [port]
+ * Usage:  node scripts/run-once.js <playbook-id> [port]
  */
 
-import './lib/node-chrome-stub.js';
+import '../lib/node-chrome-stub.js';
 import CDP from 'chrome-remote-interface';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { route, ensureInitialized } from './lib/router.js';
-import { storageApi } from './lib/storage.js';
+import { route, ensureInitialized } from '../lib/router.js';
+import { storageApi } from '../lib/storage.js';
 
 const PLAYBOOK = process.argv[2] || 'accept-invites';
 const PORT = parseInt(process.argv[3] || '9876', 10);
@@ -74,8 +74,9 @@ client.on('Runtime.bindingCalled', async ({ name, payload }) => {
   }).catch(() => {});
 });
 
-const bridge = await fs.readFile(path.join(import.meta.dirname, 'lib/page-bridge.js'), 'utf8');
-const bundle = await fs.readFile(path.resolve(import.meta.dirname, '..', 'dist/content.bundle.js'), 'utf8');
+// Lives at cdp-shell/scripts/run-once.js → cdp-shell one up, repo root two up.
+const bridge = await fs.readFile(path.resolve(import.meta.dirname, '..', 'lib/page-bridge.js'), 'utf8');
+const bundle = await fs.readFile(path.resolve(import.meta.dirname, '..', '..', 'dist/content.bundle.js'), 'utf8');
 
 console.log('[run] inject bridge');
 await Runtime.evaluate({ expression: bridge });

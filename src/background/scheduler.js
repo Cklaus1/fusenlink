@@ -91,6 +91,15 @@ export async function detectAndCatchUpMissedRuns() {
  * @returns {Promise<void>}
  */
 export async function setSchedule(playbookId, config) {
+  // Bug 21: chrome.alarms silently rounds sub-minute intervals; reject early.
+  // intervalMinutes === 0 is treated as "clear alarm / effectively disabled",
+  // consistent with the existing guard `if (config.enabled && intervalMinutes > 0)`.
+  // Only reject values that are positive-but-below-1 (e.g. 0.5) or non-finite.
+  const interval = parseFloat(config?.intervalMinutes);
+  if (config?.enabled && interval !== 0 && (!Number.isFinite(interval) || interval < 1)) {
+    throw new Error(`intervalMinutes must be >= 1 (chrome.alarms minimum). Got: ${config?.intervalMinutes}`);
+  }
+
   await withSchedulesLock(async () => {
     const schedules = await getSchedules();
     schedules[playbookId] = {
@@ -146,10 +155,17 @@ async function restoreSchedules() {
   const schedules = await getSchedules();
 
   for (const [playbookId, config] of Object.entries(schedules)) {
-    if (config.enabled && config.intervalMinutes > 0) {
+    // Bug 21: skip schedules with bad intervals (< 1) rather than letting
+    // chrome.alarms silently round them to 1 minute.
+    const interval = parseFloat(config?.intervalMinutes);
+    if (!Number.isFinite(interval) || interval < 1) {
+      console.warn(`[scheduler] Skipping schedule "${playbookId}": intervalMinutes=${config?.intervalMinutes} is invalid (must be >= 1)`);
+      continue;
+    }
+    if (config.enabled) {
       const alarmName = ALARM_PREFIX + playbookId;
       // Always recreate so updates to intervalMinutes take effect
-      chrome.alarms.create(alarmName, { periodInMinutes: config.intervalMinutes });
+      chrome.alarms.create(alarmName, { periodInMinutes: interval });
     }
   }
 }

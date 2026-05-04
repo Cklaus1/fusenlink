@@ -224,12 +224,21 @@ export async function handleMessage(message, sender, sendResponse) {
       }
 
       case MSG.SET_DAILY_LIMITS: {
-        if (message.limits) {
-          await new Promise(r => chrome.storage.local.set({ dailyLimits: message.limits }, r));
-          sendResponse({ success: true });
-        } else {
-          sendResponse({ success: false, error: 'No limits provided' });
+        // Bug 31: validate input shape — coerce strings, drop invalid keys,
+        // reject anything that isn't an object.
+        if (!message.limits || typeof message.limits !== 'object') {
+          sendResponse({ success: false, error: 'limits must be an object' });
+          break;
         }
+        const cleaned = {};
+        for (const [k, v] of Object.entries(message.limits)) {
+          const n = parseInt(v, 10);
+          if (Number.isFinite(n) && n >= 0 && n <= 10000) {
+            cleaned[k] = n;
+          }
+        }
+        await new Promise(r => chrome.storage.local.set({ dailyLimits: cleaned }, r));
+        sendResponse({ success: true, applied: cleaned });
         break;
       }
 
@@ -295,6 +304,11 @@ export async function handleMessage(message, sender, sendResponse) {
       case MSG.SET_SEQUENCE_STATUS: {
         await Seq.setSequenceStatus(message.sequenceId, message.status);
         sendResponse({ success: true });
+        break;
+      }
+      case MSG.RESTAGGER_SEQUENCE: {
+        const result = await Seq.restagger(message.sequenceId);
+        sendResponse(result || { error: 'Sequence not found' });
         break;
       }
 

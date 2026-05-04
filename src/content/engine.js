@@ -19,6 +19,73 @@ import { ACTION_REGISTRY } from './actions/index.js';
 class BreakSignal {}
 
 /**
+ * Bug 9 / Bug 29: persist the "we already warned about this playbook's
+ * safetyCap" flag in chrome.storage so the warning isn't re-issued every
+ * time the SW spins up a fresh engine instance. Without this, the same
+ * playbook spam-warns daily (or on each SW wakeup). 24h TTL; entries
+ * older than 7 days are pruned on write.
+ *
+ * @param {string} playbookId
+ * @returns {Promise<boolean>} true if a warning was emitted within the last 24h
+ */
+export async function isAlreadyWarned(playbookId) {
+  return new Promise(resolve => {
+    try {
+      chrome.storage.local.get('meta.warnedSafetyCaps', r => {
+        const map = (r && r['meta.warnedSafetyCaps']) || {};
+        const ts = map[playbookId];
+        if (!ts) return resolve(false);
+        if (Date.now() - ts > 86400000) return resolve(false); // 24h TTL
+        resolve(true);
+      });
+    } catch {
+      resolve(false);
+    }
+  });
+}
+
+/**
+ * Bug 9 / Bug 29: record a safetyCap warning for this playbook, with TTL
+ * pruning of stale entries older than 7 days.
+ * @param {string} playbookId
+ */
+export function markWarned(playbookId) {
+  try {
+    chrome.storage.local.get('meta.warnedSafetyCaps', r => {
+      const map = (r && r['meta.warnedSafetyCaps']) || {};
+      map[playbookId] = Date.now();
+      const cutoff = Date.now() - 7 * 86400000;
+      for (const k of Object.keys(map)) {
+        if (map[k] < cutoff) delete map[k];
+      }
+      try { chrome.storage.local.set({ 'meta.warnedSafetyCaps': map }); } catch { /* ignore */ }
+    });
+  } catch { /* ignore */ }
+}
+
+/**
+ * Bug 8: utility to scrub stale "in_progress" activity-log entries written
+ * by older engine versions that didn't tag entries with a runId. Marks any
+ * such legacy in-progress row older than 1 hour as 'orphaned' so the popup's
+ * non-complete filter excludes it from daily sums. Not invoked from the
+ * engine itself — exported for the playbook-store migration path.
+ *
+ * @param {Array<Object>} entries - raw activityLog rows
+ * @returns {Array<Object>} new array with orphaned legacy rows tagged
+ */
+export function migrateLegacyActivityLog(entries) {
+  if (!Array.isArray(entries)) return entries;
+  const now = Date.now();
+  return entries.map(entry => {
+    if (!entry || entry.runId) return entry;
+    if (entry.outcome !== 'in_progress') return entry;
+    const ts = entry.timestamp || entry.ts || 0;
+    if (now - ts < 3600000) return entry; // <1h old, leave alone
+    return { ...entry, outcome: 'orphaned' };
+  });
+}
+
+/**
  * Bug 17: classify a step error so the AI knows whether to retry or abandon.
  * Transient and rate_limit errors are typically worth retrying; auth errors
  * are not. The AI prompt instructs the model to honor errorClass.
@@ -97,9 +164,10 @@ export class PlaybookEngine {
     // Bug 1: track loop nesting depth so aiCall can decide to throw (outside
     // loops) or swallow+log (inside loops) on transient errors.
     this._loopDepth = 0;
-    // Bug 27: avoid log spam — only warn once per playbookId per run when a
-    // safetyCap is hit.
-    this._warnedSafetyCaps = new Set();
+    // Bug 27 / Bug 9 / Bug 29: dedup of safetyCap warnings now lives in
+    // chrome.storage (see isAlreadyWarned/markWarned) so the cache survives
+    // SW sleeps and fresh engine instances. The constructor no longer keeps
+    // an in-memory Set.
     // Bug 4 / Bug 21: stable id shared across all activity-log entries from a
     // single run. The popup uses this to dedupe checkpoints against the
     // canonical _finalize entry.
@@ -556,12 +624,13 @@ export class PlaybookEngine {
       while (!this.stopRequested) {
         if (iter >= cap) {
           if (cap !== Infinity) {
-            // Bug 27: only warn once per playbookId per run. Repeated warnings
-            // on every iteration of a hot loop turned the console into noise.
+            // Bug 27 / Bug 9 / Bug 29: dedup warnings via chrome.storage so
+            // the cache survives SW sleeps and fresh engine instances. 24h
+            // TTL — same playbook hitting its cap won't spam-warn daily.
             const id = this.playbook.id;
-            if (!this._warnedSafetyCaps.has(id)) {
-              this._warnedSafetyCaps.add(id);
-              console.warn(`PlaybookEngine: loop hit safetyCap ${cap} (playbook=${id}); breaking. Suppressing further warnings for this playbook this run.`);
+            if (!(await isAlreadyWarned(id))) {
+              console.warn(`PlaybookEngine: loop hit safetyCap ${cap} (playbook=${id}); breaking.`);
+              markWarned(id);
             }
           }
           break;
@@ -710,6 +779,10 @@ export class PlaybookEngine {
    * Bug 4 / Bug 21: every entry carries the run's stable runId so the popup
    * can dedupe checkpoints against the canonical _finalize entry instead of
    * triple-counting processedCount in daily totals.
+   *
+   * Bug 8: runId is REQUIRED for proper popup-side deduplication. Pre-migration
+   * legacy entries written by older engine versions lack runId and must be
+   * filtered/repaired by the popup-side store (see migrateLegacyActivityLog).
    */
   _emitCheckpoint() {
     sendMessage({

@@ -18,42 +18,45 @@ const path = require('path');
 
 const PORT = process.env.FUSENLINK_PORT || 9333;
 
-// Auth token — Bug 7 fix: reuse existing token from ~/.fusenlink/sidecar.token so
+// Auth token — reuse existing token from ~/.fusenlink/sidecar.token so
 // CLI sessions survive sidecar restarts. Generate a new token only when:
 //   (a) the file doesn't exist (first run), or
-//   (b) --rotate-token flag is passed, or
+//   (b) --rotate-token[=true] flag is passed (Bug 14), or
 //   (c) FUSENLINK_TOKEN env var is explicitly set (use that value, skip file).
 const TOKEN_FILE = path.join(os.homedir(), '.fusenlink', 'sidecar.token');
-const ROTATE = process.argv.includes('--rotate-token');
 
+// Bug 14 fix: detect both --rotate-token and --rotate-token=<value> forms.
+const ROTATE = process.argv.some(a => a === '--rotate-token' || a.startsWith('--rotate-token='));
+
+/**
+ * Load or generate the auth token.
+ * Returns { token, isNew } but does NOT write the token file — the write
+ * is deferred until after server.listen() succeeds (Bug 12 fix).
+ */
 function loadOrGenerateToken() {
   if (process.env.FUSENLINK_TOKEN) {
     console.log('  Auth token: provided via FUSENLINK_TOKEN env var.');
-    return process.env.FUSENLINK_TOKEN;
+    return { token: process.env.FUSENLINK_TOKEN, isNew: false };
   }
+
+  // Bug 14 fix: only skip file read if --rotate-token is absent.
   if (!ROTATE && fs.existsSync(TOKEN_FILE)) {
     try {
       const t = fs.readFileSync(TOKEN_FILE, 'utf8').trim();
       if (/^[a-f0-9]{32,}$/i.test(t)) {
-        console.log(`  Auth token: reusing existing from ${TOKEN_FILE}`);
-        return t;
+        console.log(`  Auth token: reusing from ${TOKEN_FILE}`);
+        return { token: t, isNew: false };
       }
     } catch {}
   }
-  // Generate new token and persist it
+
+  // Generate a new token — do NOT write to file yet (Bug 12: write only after bind).
   const t = crypto.randomBytes(16).toString('hex');
-  try {
-    const dir = path.dirname(TOKEN_FILE);
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-    fs.writeFileSync(TOKEN_FILE, t, { mode: 0o600 });
-    console.log(`  Auth token: generated new, saved to ${TOKEN_FILE}`);
-  } catch (err) {
-    console.warn(`  Auth token: failed to persist (${err.message}); only available in memory`);
-  }
-  return t;
+  return { token: t, isNew: true };
 }
 
-const AUTH_TOKEN = loadOrGenerateToken();
+const tokenInfo = loadOrGenerateToken();
+const AUTH_TOKEN = tokenInfo.token;
 
 // Track the connected extension client
 let extensionSocket = null;
@@ -318,11 +321,50 @@ function timingSafeEqual(a, b) {
   return crypto.timingSafeEqual(bufA, bufB);
 }
 
-// Start server
+// Start server — Bug 12 fix: bind FIRST, persist token AFTER successful bind
+// so that a --rotate-token race with another running sidecar never corrupts
+// the token file with an unserviceable token.
 server.listen(PORT, () => {
   console.log(`[fusenlink-sidecar] HTTP + WS server on port ${PORT}`);
   console.log(`  HTTP API: http://localhost:${PORT}/api/`);
   console.log(`  WS endpoint: ws://localhost:${PORT}/ws`);
-  // Token status was already logged by loadOrGenerateToken() above.
+
+  // Persist a newly-generated token now that we know the bind succeeded.
+  if (tokenInfo.isNew && !process.env.FUSENLINK_TOKEN) {
+    let persisted = false;
+    try {
+      const dir = path.dirname(TOKEN_FILE);
+      // Bug 13 fix: ensure dir exists with restricted mode; tighten if already present.
+      if (!fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+      } else {
+        try { fs.chmodSync(dir, 0o700); } catch {}  // tighten existing dir (may fail on Windows)
+      }
+      fs.writeFileSync(TOKEN_FILE, AUTH_TOKEN, { mode: 0o600 });
+      console.log(`  Auth token: generated, saved to ${TOKEN_FILE}`);
+      persisted = true;
+    } catch (err) {
+      console.warn(`  Auth token: failed to persist (${err.message})`);
+    }
+
+    // Bug 11 fix: when persistence fails, print the token so the user can
+    // set FUSENLINK_TOKEN in their CLI shell and still authenticate.
+    if (!persisted) {
+      console.log(`  Auth token (memory-only): ${AUTH_TOKEN}`);
+      console.log(`  Set FUSENLINK_TOKEN=${AUTH_TOKEN} in your CLI shell before running fusenlink commands.`);
+    }
+  }
+
   console.log(`  Waiting for extension to connect...`);
+});
+
+// Bug 12 fix: if port is already in use (another sidecar running), exit cleanly
+// WITHOUT having written a new token — token file is left unchanged.
+server.on('error', (err) => {
+  if (err.code === 'EADDRINUSE') {
+    console.error(`[fusenlink-sidecar] Port ${PORT} already in use. Another sidecar may be running.`);
+    console.error(`  Did NOT rotate the token — token file is unchanged.`);
+    process.exit(1);
+  }
+  throw err;
 });

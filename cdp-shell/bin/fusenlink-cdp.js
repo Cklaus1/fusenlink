@@ -230,6 +230,10 @@ Options:
                             default to off; attach defaults to on)
   --no-persist              disable persistent injection (only meaningful for
                             'attach', which otherwise enables it by default)
+
+Note:
+  After upgrading from a prior version, reload your LinkedIn tab so the new
+  bundle (with renamed bridge globals) replaces the in-memory copy.
 `);
       break;
     default:

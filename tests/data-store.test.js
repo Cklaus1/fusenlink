@@ -84,6 +84,35 @@ describe('storeData with mergeKey', () => {
     const stored = readStored('data.contacts');
     expect(Object.keys(stored.items)).toEqual(['a']);
   });
+
+  // Bug 19: storeData with mergeKey must report skipped count for items missing the field
+  test('returns count of stored and skipped items when some are missing the mergeKey', async () => {
+    const result = await storeData('contacts', [
+      { id: 'a', name: 'Alice' },
+      { id: 'b', name: 'Bob' },
+      { id: 'c', name: 'Carol' },
+      { name: 'NoId1' },  // missing id
+      { name: 'NoId2' }   // missing id
+    ], { mergeKey: 'id' });
+
+    expect(result.success).toBe(true);
+    expect(result.count).toBe(3);
+    expect(result.skipped).toBe(2);
+
+    const stored = readStored('data.contacts');
+    expect(Object.keys(stored.items).sort()).toEqual(['a', 'b', 'c']);
+  });
+
+  test('returns skipped: 0 when all items have the mergeKey', async () => {
+    const result = await storeData('contacts', [
+      { id: 'x', name: 'X' },
+      { id: 'y', name: 'Y' }
+    ], { mergeKey: 'id' });
+
+    expect(result.success).toBe(true);
+    expect(result.count).toBe(2);
+    expect(result.skipped).toBe(0);
+  });
 });
 
 describe('storeData appending entries (no mergeKey)', () => {

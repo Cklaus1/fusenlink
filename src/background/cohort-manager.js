@@ -164,10 +164,17 @@ async function _doSync() {
     // Merge remote into local — remote is authoritative for shared fields.
     // Bug 23: normalize members so the merged shape is always
     // [{name, linkedin, company}] regardless of what the remote sent.
+    // Bug 25: drop null-slug keys from connectionMap so '' never accumulates
+    // false-positive warm-intro matches.
+    const rawConnectionMap = remote.connectionMap || config.connectionMap || {};
+    const cleanConnectionMap = Object.fromEntries(
+      Object.entries(rawConnectionMap).filter(([key]) => key !== null && key !== '')
+    );
     const merged = {
       ...config,
       ...remote,
       members: normalizeMembers(remote.members || config.members || []),
+      connectionMap: cleanConnectionMap,
       syncUrl: config.syncUrl, // Preserve local syncUrl
       syncError: null,
       lastSynced: new Date().toISOString()
@@ -266,15 +273,19 @@ export async function detectWarmIntros(targetProfileUrl) {
   // Populated by each member running extract-contacts and uploading via the sync endpoint
 
   const normalizedTarget = normalizeProfileUrl(targetProfileUrl);
+  // Bug 25: if target URL is unparseable we can't match anything — bail early.
+  if (!normalizedTarget) return [];
   const matches = [];
 
   for (const member of members) {
     // Bug 20: members without a LinkedIn URL are kept by normalizeMembers,
     // so consumers that need a slug must filter per-iteration. Without this
-    // guard, extractSlug('') returns '' and connectionMap[''] could match
-    // unintended entries.
+    // guard extractSlug('') would return null (Bug 25 fix) but we still skip
+    // early to avoid the connectionMap lookup.
     if (!member.linkedin) continue;
     const memberSlug = extractSlug(member.linkedin);
+    // Bug 25: skip members whose LinkedIn URL doesn't contain /in/slug
+    if (!memberSlug) continue;
     const memberConnections = connectionMap[memberSlug] || [];
 
     if (memberConnections.some(url => normalizeProfileUrl(url) === normalizedTarget)) {
@@ -302,7 +313,11 @@ export async function uploadMyConnections() {
   return new Promise(resolve => {
     chrome.storage.local.get(STORAGE_KEYS.DATA_CONTACTS, async (result) => {
       const contacts = result[STORAGE_KEYS.DATA_CONTACTS] || {};
-      const profileUrls = Object.keys(contacts.items || {});
+      // Bug 25: filter out URLs that don't resolve to a valid /in/slug — null
+      // slugs would create an empty-string bucket in the server's connectionMap.
+      const profileUrls = Object.keys(contacts.items || {}).filter(
+        url => extractSlug(url) !== null
+      );
 
       if (profileUrls.length === 0) {
         resolve(false);
@@ -341,14 +356,18 @@ export async function uploadMyConnections() {
 // --- Helpers ---
 
 function normalizeProfileUrl(url) {
-  if (!url) return '';
+  // Bug 25: return null instead of '' for missing/unparseable input so callers
+  // can distinguish "no URL" from a valid slug match.
+  if (!url) return null;
   // Extract /in/slug/ part and normalize
   const match = url.match(/\/in\/([^/?]+)/);
-  return match ? match[1].toLowerCase() : '';
+  return match ? match[1].toLowerCase() : null;
 }
 
 function extractSlug(url) {
-  if (!url) return '';
+  // Bug 25: return null instead of '' so the empty-string key never appears
+  // in connectionMap, preventing false positive warm-intro matches.
+  if (!url) return null;
   const match = url.match(/\/in\/([^/?]+)/);
-  return match ? match[1] : '';
+  return match ? match[1] : null;
 }

@@ -111,20 +111,30 @@ export async function initializeDefaults() {
 }
 
 /**
- * Bug 4: Per-field merge between shipped and stored playbook on version
- * bump. We replace ship-controlled fields (steps, urlPattern, name,
- * description, buttonLabel, selectors registry key, version) with the
- * shipped values, but PRESERVE user customizations under `settings`.
+ * Bug 2 / Bug 4: Per-field merge between shipped and stored playbook on
+ * version bump.
  *
- * For `settings`: start from shipped defaults, then overlay stored values
- * for keys that still exist in shipped (so dead/removed setting keys are
- * dropped rather than carried forward forever).
+ * `settings` is fully merged: start from shipped defaults, overlay stored
+ * values for keys still present in shipped, capture removed/renamed keys
+ * in `droppedSettings` (Bug 6).
+ *
+ * Top-level fields the user is allowed to customize from the options UI
+ * (`urlPattern`, `buttonLabel`, `description`) are PROTECTED — if the
+ * stored value differs from the shipped value, we assume the user
+ * customized it and keep the stored value.
+ *
+ * Trade-off (Bug 2): we cannot tell which prior shipped default produced
+ * the stored value, so any time the shipped default for one of these
+ * fields changes between versions, users who never customized will keep
+ * the OLD shipped default. The options UI should expose an explicit
+ * "Reset to defaults" affordance for users who want fresh ship behavior.
+ *
+ * Other ship-controlled fields (`steps`, `selectors` registry key,
+ * `version`, `name`) continue to be REPLACED with shipped values.
  *
  * Note on `selectors`: this is the registry KEY (e.g.
  * 'linkedin.invitations'), not the selector data itself. Selector data
- * lives in DEFAULT_SELECTOR_REGISTRIES and is ship-controlled — we
- * intentionally REPLACE selector content via migrateSelectors() because
- * users shouldn't be customizing selectors by hand.
+ * lives in DEFAULT_SELECTOR_REGISTRIES and is ship-controlled.
  */
 function mergePlaybookFields(shipped, stored) {
   const mergedSettings = {};
@@ -143,13 +153,23 @@ function mergePlaybookFields(shipped, stored) {
       droppedSettings[k] = stored.settings[k];
     }
   }
-  return {
-    merged: {
-      ...shipped, // steps, urlPattern, name, description, buttonLabel, selectors, version
-      settings: mergedSettings
-    },
-    droppedSettings
+
+  // Bug 2: preserve user-customizable top-level fields when stored differs
+  // from shipped. We can't tell what the *prior* shipped default was, so
+  // "stored !== shipped" is a heuristic for "user customized". See the
+  // trade-off note above.
+  const PROTECTED_FIELDS = ['urlPattern', 'buttonLabel', 'description'];
+  const merged = {
+    ...shipped, // steps, name, selectors, version, urlPattern/buttonLabel/description (overwritten below if user-customized)
+    settings: mergedSettings
   };
+  for (const field of PROTECTED_FIELDS) {
+    if (stored[field] !== undefined && stored[field] !== shipped[field]) {
+      merged[field] = stored[field];
+    }
+  }
+
+  return { merged, droppedSettings };
 }
 
 // Exported for tests.
@@ -229,21 +249,38 @@ async function migrateSelectors() {
 }
 
 /**
- * Bug 33: append a migration record to meta.migrations. Append-only,
- * capped at the last 10 entries so the meta blob can't grow unbounded.
+ * Bug 22 / Bug 33: append a migration record to meta.migrations.
+ * Append-only, capped at the last 50 entries so the meta blob can't grow
+ * unbounded. When entries exceed the cap, the meta record (re-)written
+ * carries a `truncated: true` flag so the UI can show "earlier history
+ * truncated".
  */
+const MIGRATION_LOG_CAP = 50;
+
 async function recordMigration(changes) {
   return withLock('meta.migrations', async () => {
-    const stored = await new Promise(r => chrome.storage.local.get('meta.migrations', x => r(x['meta.migrations'] || [])));
-    const history = Array.isArray(stored) ? stored : [];
-    history.push({
+    const stored = await new Promise(r => chrome.storage.local.get('meta.migrations', x => r(x['meta.migrations'])));
+    // Support both legacy shape (array) and new shape ({ entries, truncated }).
+    let entries = [];
+    let prevTruncated = false;
+    if (Array.isArray(stored)) {
+      entries = stored.slice();
+    } else if (stored && Array.isArray(stored.entries)) {
+      entries = stored.entries.slice();
+      prevTruncated = !!stored.truncated;
+    }
+    entries.push({
       version: chrome.runtime?.getManifest?.()?.version || 'unknown',
       migratedAt: new Date().toISOString(),
       changes
     });
-    // Cap at last 10
-    const capped = history.slice(-10);
-    await new Promise(r => chrome.storage.local.set({ 'meta.migrations': capped }, r));
+    // Bug 22: cap at last 50 (was 10) and flag truncation for the UI.
+    let truncated = prevTruncated;
+    if (entries.length > MIGRATION_LOG_CAP) {
+      entries = entries.slice(-MIGRATION_LOG_CAP);
+      truncated = true;
+    }
+    await new Promise(r => chrome.storage.local.set({ 'meta.migrations': { entries, truncated } }, r));
   });
 }
 

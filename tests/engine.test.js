@@ -21,8 +21,32 @@ function makePlaybook(steps, settings = {}) {
 const emptyRegistry = {};
 
 describe('PlaybookEngine', () => {
+  // Bug 9 / Bug 29: the engine reads/writes meta.warnedSafetyCaps on
+  // chrome.storage.local. jest-chrome's default mock for storage.local.get
+  // doesn't invoke the callback, which would deadlock any test whose loop
+  // hits a safetyCap. Provide an in-memory backing here so tests run.
+  let _engineLocalStore;
   beforeEach(() => {
     document.body.innerHTML = '';
+    _engineLocalStore = new Map();
+    chrome.storage.local.get.mockImplementation((keys, callback) => {
+      const out = {};
+      const k = typeof keys === 'string' ? keys : null;
+      if (k) {
+        if (_engineLocalStore.has(k)) out[k] = _engineLocalStore.get(k);
+      } else if (Array.isArray(keys)) {
+        for (const key of keys) if (_engineLocalStore.has(key)) out[key] = _engineLocalStore.get(key);
+      } else if (keys && typeof keys === 'object') {
+        for (const key of Object.keys(keys)) {
+          out[key] = _engineLocalStore.has(key) ? _engineLocalStore.get(key) : keys[key];
+        }
+      }
+      callback(out);
+    });
+    chrome.storage.local.set.mockImplementation((items, callback) => {
+      for (const [k, v] of Object.entries(items)) _engineLocalStore.set(k, v);
+      if (callback) callback();
+    });
   });
 
   describe('basic step execution', () => {
@@ -953,27 +977,35 @@ describe('PlaybookEngine', () => {
     });
   });
 
-  // Bug 27: a hot loop hitting a safetyCap previously logged a warning every
-  // single iteration once it was past the cap. We now log once per playbookId
-  // per run.
-  describe('safetyCap warn dedup (Bug 27)', () => {
-    test('warns at most once per playbookId per run', async () => {
+  // Bug 27 / Bug 9 / Bug 29: a hot loop hitting a safetyCap previously logged
+  // a warning every single iteration once it was past the cap. We now log
+  // once per playbookId, with a 24h TTL persisted in chrome.storage.local so
+  // the cache survives SW sleeps and fresh engine instances.
+  describe('safetyCap warn dedup (Bug 9 / Bug 27 / Bug 29)', () => {
+    // The parent describe sets up an in-memory chrome.storage.local mock
+    // and resets it per test. We reach into _engineLocalStore from the
+    // outer scope when a test needs to age stored timestamps.
+
+    // Helper: spin up a playbook whose loop will hit safetyCap.
+    const capRunbook = (id) => ({
+      id,
+      version: 1,
+      name: id,
+      steps: [
+        { action: 'setVar', var: 'i', value: 0 },
+        { action: 'loop', safetyCap: 3, steps: [{ action: 'incrementVar', var: 'i' }] }
+      ],
+      settings: { delayMs: 1 }
+    });
+
+    test('warns at most once per playbookId in a single run', async () => {
       const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
       try {
         const playbook = makePlaybook([
           { action: 'setVar', var: 'i', value: 0 },
-          {
-            action: 'loop',
-            safetyCap: 3,
-            steps: [{ action: 'incrementVar', var: 'i' }]
-          },
-          // Second loop with the same playbookId hitting the cap again
+          { action: 'loop', safetyCap: 3, steps: [{ action: 'incrementVar', var: 'i' }] },
           { action: 'setVar', var: 'j', value: 0 },
-          {
-            action: 'loop',
-            safetyCap: 3,
-            steps: [{ action: 'incrementVar', var: 'j' }]
-          }
+          { action: 'loop', safetyCap: 3, steps: [{ action: 'incrementVar', var: 'j' }] }
         ]);
         const engine = new PlaybookEngine(playbook, emptyRegistry);
         await engine.run();
@@ -981,8 +1013,55 @@ describe('PlaybookEngine', () => {
         const safetyWarns = warnSpy.mock.calls.filter(
           args => typeof args[0] === 'string' && args[0].includes('safetyCap')
         );
-        // Only one warning despite two loops hitting the cap.
         expect(safetyWarns.length).toBe(1);
+      } finally {
+        warnSpy.mockRestore();
+      }
+    });
+
+    test('first run warns; second engine instance within 24h skips the warn', async () => {
+      const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        const engine1 = new PlaybookEngine(capRunbook('cap-pb-1'), emptyRegistry);
+        await engine1.run();
+        const firstCount = warnSpy.mock.calls.filter(
+          args => typeof args[0] === 'string' && args[0].includes('safetyCap')
+        ).length;
+        expect(firstCount).toBe(1);
+
+        // Fresh instance — the in-memory `_warnedSafetyCaps` set wouldn't
+        // help here. Storage-backed dedup must suppress the warning.
+        const engine2 = new PlaybookEngine(capRunbook('cap-pb-1'), emptyRegistry);
+        await engine2.run();
+        const secondCount = warnSpy.mock.calls.filter(
+          args => typeof args[0] === 'string' && args[0].includes('safetyCap')
+        ).length;
+        expect(secondCount).toBe(1);
+      } finally {
+        warnSpy.mockRestore();
+      }
+    });
+
+    test('after 24h TTL elapses, a new run warns again', async () => {
+      const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        const engine1 = new PlaybookEngine(capRunbook('cap-pb-2'), emptyRegistry);
+        await engine1.run();
+        expect(warnSpy.mock.calls.filter(
+          a => typeof a[0] === 'string' && a[0].includes('safetyCap')
+        ).length).toBe(1);
+
+        // Simulate >24h passage by ageing the stored timestamp.
+        const map = _engineLocalStore.get('meta.warnedSafetyCaps') || {};
+        for (const k of Object.keys(map)) map[k] = Date.now() - (25 * 60 * 60 * 1000);
+        _engineLocalStore.set('meta.warnedSafetyCaps', map);
+
+        const engine2 = new PlaybookEngine(capRunbook('cap-pb-2'), emptyRegistry);
+        await engine2.run();
+        const finalCount = warnSpy.mock.calls.filter(
+          a => typeof a[0] === 'string' && a[0].includes('safetyCap')
+        ).length;
+        expect(finalCount).toBe(2);
       } finally {
         warnSpy.mockRestore();
       }

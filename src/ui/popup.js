@@ -18,6 +18,11 @@ import { PLAYBOOK_URLS, DEFAULT_DAILY_LIMITS, timeAgo } from '../shared/constant
 
 function localDateString(d = new Date()) {
   const y = d.getFullYear();
+  if (y < 2020 || y > 2050) {
+    // System clock looks wrong — fall back to UTC for consistency
+    console.warn(`localDateString: suspicious year ${y}, using UTC fallback`);
+    return d.toISOString().slice(0, 10);
+  }
   const m = String(d.getMonth() + 1).padStart(2, '0');
   const day = String(d.getDate()).padStart(2, '0');
   return `${y}-${m}-${day}`;
@@ -127,6 +132,20 @@ chrome.storage.local.get('meta.quota', (result) => {
   }
 });
 
+// Bug 28: migration banner — show one-line notice if any migration ran today
+chrome.storage.local.get('meta', (result) => {
+  const meta = result.meta || {};
+  const log = meta.migrations || [];
+  if (log.length === 0) return;
+  const todayISO = localDateString();
+  const todayMigrations = log.filter(e => {
+    if (!e.migratedAt) return false;
+    return localDateString(new Date(e.migratedAt)) === todayISO;
+  });
+  if (todayMigrations.length === 0) return;
+  showMigrationBanner(todayMigrations.length);
+});
+
 function showQuotaBanner(q) {
   let banner = document.getElementById('quotaBanner');
   if (!banner) {
@@ -152,6 +171,35 @@ function showQuotaBanner(q) {
   link.href = '#';
   link.textContent = 'Export & cleanup';
   link.addEventListener('click', (e) => { e.preventDefault(); chrome.runtime.openOptionsPage(); });
+  banner.appendChild(link);
+}
+
+function showMigrationBanner(count) {
+  let banner = document.getElementById('migrationBanner');
+  if (!banner) {
+    banner = document.createElement('div');
+    banner.id = 'migrationBanner';
+    Object.assign(banner.style, {
+      padding: '8px 12px',
+      background: '#e7f3ff',
+      borderLeft: '3px solid #0a66c2',
+      fontSize: '12px',
+      color: '#333'
+    });
+    document.body.insertBefore(banner, document.body.firstChild);
+  }
+  banner.innerHTML = '';
+  const span = document.createElement('span');
+  span.textContent = `${count} update${count > 1 ? 's' : ''} applied today. `;
+  banner.appendChild(span);
+  const link = document.createElement('a');
+  link.href = '#';
+  link.textContent = 'View details';
+  link.style.cursor = 'pointer';
+  link.addEventListener('click', (e) => {
+    e.preventDefault();
+    chrome.runtime.openOptionsPage();
+  });
   banner.appendChild(link);
 }
 

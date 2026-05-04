@@ -47,9 +47,18 @@
     const reqId = nextReqId++;
     return new Promise((resolve) => {
       pending.set(reqId, resolve);
-      // __fusenlink_cdpSend is added via Runtime.addBinding by the Node shell
-      // It accepts a single string argument
-      __fusenlink_cdpSend(JSON.stringify({ reqId, ...payload }));
+      // Bug 5 fix: dispatch through the session-scoped binding name set by
+      // the Node shell's prelude. Falling back to the legacy global keeps
+      // older bundles working if a stale prelude is missing.
+      const fnName = window.__fusenlink_cdpSendName || '__fusenlink_cdpSend';
+      const fn = window[fnName];
+      if (typeof fn === 'function') {
+        fn(JSON.stringify({ reqId, ...payload }));
+      } else {
+        console.warn('[bridge] no cdp send binding installed; dropping message');
+        pending.delete(reqId);
+        resolve(null);
+      }
     });
   }
 
@@ -63,17 +72,24 @@
 
   // chrome.runtime.onMessage handlers — fired by Node via __fusenlink_cdpDeliver
   const onMessageHandlers = [];
+  // Bug 5 fix: helper that always dispatches via the session-scoped binding.
+  function rawDispatch(payload) {
+    const fnName = window.__fusenlink_cdpSendName || '__fusenlink_cdpSend';
+    const fn = window[fnName];
+    if (typeof fn === 'function') fn(JSON.stringify(payload));
+    else console.warn('[bridge] no cdp send binding installed; dropping reply');
+  }
   window.__fusenlink_cdpDeliver = (msg, deliverId) => {
     if (onMessageHandlers.length === 0) {
       // No handler registered yet — reply with no-op
-      __fusenlink_cdpSend(JSON.stringify({ kind: 'deliverResponse', deliverId, response: null }));
+      rawDispatch({ kind: 'deliverResponse', deliverId, response: null });
       return;
     }
     let responded = false;
     const sendResponse = (data) => {
       if (responded) return;
       responded = true;
-      __fusenlink_cdpSend(JSON.stringify({ kind: 'deliverResponse', deliverId, response: data }));
+      rawDispatch({ kind: 'deliverResponse', deliverId, response: data });
     };
     // Fire only the first handler that returns truthy (matching Chrome semantics:
     // multiple listeners can each handle, but we only need one response).

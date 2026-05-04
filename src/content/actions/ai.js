@@ -96,10 +96,26 @@ export async function aiCall(step, engine, Overlay) {
 
 export async function storeData(step, engine) {
   const data = engine._resolve(step.data);
+  // Bug 23: tag each persisted item with the current engine runId so rows
+  // can be correlated back to the engine run that created them. Both array
+  // and object shapes are supported.
+  const runId = engine && engine._runId ? engine._runId : null;
+  let tagged = data;
+  if (runId != null) {
+    if (Array.isArray(data)) {
+      tagged = data.map(item =>
+        (item && typeof item === 'object' && !Array.isArray(item))
+          ? { ...item, runId }
+          : item
+      );
+    } else if (data && typeof data === 'object') {
+      tagged = { ...data, runId };
+    }
+  }
   await sendMessage({
     action: MSG.STORE_DATA,
     collection: step.collection,
-    data,
+    data: tagged,
     options: { mergeKey: step.mergeKey }
   });
 }

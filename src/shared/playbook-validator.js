@@ -4,7 +4,6 @@
  */
 
 import { ACTION_REGISTRY } from '../content/actions/index.js';
-import { evaluate } from '../content/expression.js';
 
 const CONTROL_FLOW_ACTIONS = ['loop', 'forEach', 'conditional', 'break'];
 const ALL_KNOWN_ACTIONS = [...Object.keys(ACTION_REGISTRY), ...CONTROL_FLOW_ACTIONS];
@@ -13,14 +12,25 @@ const REQUIRED_FIELDS = ['id', 'version', 'name', 'urlPattern', 'steps'];
 
 /**
  * Validate a playbook definition.
+ *
+ * Returns `{ valid, errors, warnings }`:
+ *  - `errors` block save (valid=false when present)
+ *  - `warnings` are informational — surfaced to the user but don't block save.
+ *    Bug 27: `looksStaticallyFalse` matches now feed warnings instead of
+ *    errors so that intentional placeholders like `breakIf: 'false'` (used
+ *    during playbook authoring/testing) don't refuse to save.
+ *
+ * Existing callers that destructure `{ valid, errors }` continue to work;
+ * `warnings` is additive.
  * @param {Object} playbook
- * @returns {{ valid: boolean, errors: string[] }}
+ * @returns {{ valid: boolean, errors: string[], warnings: string[] }}
  */
 export function validatePlaybook(playbook) {
   const errors = [];
+  const warnings = [];
 
   if (!playbook || typeof playbook !== 'object') {
-    return { valid: false, errors: ['Playbook must be a non-null object'] };
+    return { valid: false, errors: ['Playbook must be a non-null object'], warnings };
   }
 
   // Required fields
@@ -52,22 +62,23 @@ export function validatePlaybook(playbook) {
     if (playbook.steps.length === 0) {
       errors.push('"steps" array must not be empty');
     } else {
-      validateSteps(playbook.steps, errors, 'steps');
+      validateSteps(playbook.steps, errors, warnings, 'steps');
     }
   } else if (playbook.steps) {
     errors.push('"steps" must be an array');
   }
 
-  return { valid: errors.length === 0, errors };
+  return { valid: errors.length === 0, errors, warnings };
 }
 
 /**
  * Recursively validate step arrays.
  * @param {Object[]} steps
  * @param {string[]} errors
+ * @param {string[]} warnings
  * @param {string} path - For error messages
  */
-function validateSteps(steps, errors, path) {
+function validateSteps(steps, errors, warnings, path) {
   for (let i = 0; i < steps.length; i++) {
     const step = steps[i];
     const stepPath = `${path}[${i}]`;
@@ -88,27 +99,29 @@ function validateSteps(steps, errors, path) {
 
     // Validate nested steps in control flow
     if (step.action === 'loop' || step.action === 'forEach') {
-      if (step.steps) validateSteps(step.steps, errors, `${stepPath}.steps`);
+      if (step.steps) validateSteps(step.steps, errors, warnings, `${stepPath}.steps`);
     }
     if (step.action === 'conditional') {
       if (!step.condition) {
         errors.push(`${stepPath}: conditional requires "condition"`);
       }
-      if (step.onTrue) validateSteps(step.onTrue, errors, `${stepPath}.onTrue`);
-      if (step.onFalse) validateSteps(step.onFalse, errors, `${stepPath}.onFalse`);
+      if (step.onTrue) validateSteps(step.onTrue, errors, warnings, `${stepPath}.onTrue`);
+      if (step.onFalse) validateSteps(step.onFalse, errors, warnings, `${stepPath}.onFalse`);
     }
     // Bug 11: loops without a termination guard silently spin forever.
     if (step.action === 'loop') {
       if (!step.breakIf && typeof step.maxIterations !== 'number') {
         errors.push(`${stepPath}: loop requires "breakIf" expression OR "maxIterations" number`);
       }
-      // Bug 16: a literal `breakIf: 'false'` (or any expression with no
-      // $variables that statically evaluates to a falsy value) will never
-      // break the loop. Combined with the default safetyCap=Infinity when
-      // breakIf is set, that means the loop runs forever. Catch the
-      // common typos here.
+      // Bug 16/27: a literal `breakIf: 'false'` (or another statically-false
+      // literal with no $variable references) will never break the loop.
+      // We surface this as a *warning* rather than an error so authors can
+      // intentionally stub `breakIf: 'false'` while iterating on a playbook
+      // (Bug 27). The catch is conservative — only well-known constants —
+      // because we no longer import the full expression evaluator from
+      // content/ (Bug 4 layering fix).
       if (step.breakIf && looksStaticallyFalse(step.breakIf)) {
-        errors.push(`${stepPath}: breakIf "${step.breakIf}" appears to always be false — loop will never break`);
+        warnings.push(`${stepPath}: breakIf "${step.breakIf}" appears to always be false — loop will never break`);
       }
     }
     if (step.action === 'forEach') {
@@ -119,27 +132,37 @@ function validateSteps(steps, errors, path) {
 }
 
 /**
- * Bug 16: detect breakIf expressions that have no $variable references AND
- * statically evaluate to a falsy value. We don't reject expressions that
- * reference vars (the value depends on runtime state) and we don't reject
- * truthy literals (those break the loop on the first iteration, which is
- * weird but not infinite).
+ * Bug 4 / Bug 16: detect breakIf expressions that are well-known static
+ * falsy literals AND have no $variable references.
+ *
+ * Layering note: this used to import `evaluate` from `../content/expression.js`,
+ * but `playbook-validator.js` lives in `src/shared/` and must not depend on
+ * `src/content/`. The conservative inline check here trades coverage for
+ * isolation: it catches the common typos (`'false'`, `'0'`, `'null'`, `''`)
+ * but won't catch composed expressions like `'0 + 0'`. That's acceptable —
+ * the validator's job is to flag obvious mistakes, not to reproduce the
+ * full evaluator semantics.
  * @param {string} expr
  * @returns {boolean}
  */
 export function looksStaticallyFalse(expr) {
   if (!expr || typeof expr !== 'string') return false;
+  const trimmed = expr.trim();
   // If expr references any $variable, can't statically evaluate.
-  if (/\$\w/.test(expr)) return false;
-  try {
-    const result = evaluate(expr, {});
-    return result === false || result === 0 || result === null || result === undefined || result === '';
-  } catch {
-    return false;
-  }
+  if (/\$\w/.test(trimmed)) return false;
+  // Match well-known static-false literals only.
+  return /^(false|0|null|undefined|''|"")$/.test(trimmed);
 }
 
 const VALID_STRATEGY_TYPES = ['css', 'cssWithText', 'ariaLabel', 'textExact', 'textMatch', 'hasChild'];
+
+/**
+ * Bug 1: top-level metadata keys in a selector registry are not selector
+ * entries — they're documentation/version fields. The previous
+ * `key === 'version'` check missed `description`, `notes`, `updatedAt`,
+ * causing shipped registries with those fields to fail validation.
+ */
+const SELECTOR_METADATA_KEYS = new Set(['version', 'description', 'notes', 'updatedAt']);
 
 /**
  * Bug 18: validate a selector registry (the value side of
@@ -155,7 +178,7 @@ export function validateSelectorRegistry(registry) {
     return { valid: false, errors: ['Registry must be an object'] };
   }
   for (const [key, entry] of Object.entries(registry)) {
-    if (key === 'version') continue; // metadata
+    if (SELECTOR_METADATA_KEYS.has(key)) continue; // metadata: version/description/notes/updatedAt
     if (!entry || typeof entry !== 'object') {
       errors.push(`${key}: entry must be an object`);
       continue;

@@ -401,3 +401,136 @@ describe('Bug 24 — pessimistic completion estimate on error', () => {
     expect(result.usage.completion_tokens).toBe(4000);
   });
 });
+
+// Bug 6: saveConfig validates apiKey for non-localhost providers
+describe('Bug 6 — saveConfig apiKey validation', () => {
+  test('saveConfig with empty apiKey + non-localhost returns error', async () => {
+    const result = await saveConfig({
+      provider: 'openai',
+      baseUrl: 'https://api.openai.com/v1',
+      apiKey: '',
+      model: 'gpt-4o',
+      maxTokens: 512
+    });
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/apiKey is required/);
+  });
+
+  test('saveConfig with whitespace-only apiKey + non-localhost returns error', async () => {
+    const result = await saveConfig({
+      provider: 'openai',
+      baseUrl: 'https://api.openai.com/v1',
+      apiKey: '   ',
+      model: 'gpt-4o',
+      maxTokens: 512
+    });
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/apiKey is required/);
+  });
+
+  test('saveConfig with empty apiKey + localhost succeeds (Ollama setup)', async () => {
+    const result = await saveConfig({
+      provider: 'ollama',
+      baseUrl: 'http://localhost:11434/v1',
+      apiKey: '',
+      model: 'llama3.1:8b',
+      maxTokens: 512
+    });
+    expect(result.success).toBe(true);
+    expect(result.error).toBeUndefined();
+  });
+
+  test('saveConfig with empty apiKey + 127.0.0.1 succeeds', async () => {
+    const result = await saveConfig({
+      provider: 'vllm',
+      baseUrl: 'http://127.0.0.1:8000/v1',
+      apiKey: '',
+      model: 'mistral',
+      maxTokens: 512
+    });
+    expect(result.success).toBe(true);
+  });
+
+  test('saveConfig with valid apiKey + non-localhost succeeds', async () => {
+    const result = await saveConfig({
+      provider: 'openai',
+      baseUrl: 'https://api.openai.com/v1',
+      apiKey: 'sk-validkey123',
+      model: 'gpt-4o',
+      maxTokens: 512
+    });
+    expect(result.success).toBe(true);
+    expect(result.error).toBeUndefined();
+  });
+});
+
+// Bug 18: Provider returns HTTP 200 with malformed body
+describe('Bug 18 — malformed provider response body', () => {
+  test('OpenAI-compat provider 200 with empty choices array returns error', async () => {
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      headers: { get: () => null },
+      json: async () => ({ choices: [] })
+    });
+
+    const result = await chat({ userMessage: 'hello' });
+    expect(result.content).toBe('');
+    expect(result.error).toMatch(/malformed response \(no choices array\)/);
+    expect(result.usage).toBeDefined();
+    expect(result.usage.estimated).toBe(true);
+  });
+
+  test('OpenAI-compat provider 200 with no choices field returns error', async () => {
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      headers: { get: () => null },
+      json: async () => ({ id: 'abc', object: 'chat.completion' })
+    });
+
+    const result = await chat({ userMessage: 'hello' });
+    expect(result.content).toBe('');
+    expect(result.error).toMatch(/malformed response \(no choices array\)/);
+  });
+
+  test('Anthropic provider 200 with empty content array returns error', async () => {
+    await saveConfig({
+      provider: 'anthropic',
+      baseUrl: 'https://api.anthropic.com/v1',
+      apiKey: 'sk-ant-test',
+      model: 'claude-3-haiku-20240307',
+      maxTokens: 512
+    });
+
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      headers: { get: () => null },
+      json: async () => ({ content: [] })
+    });
+
+    const result = await chat({ userMessage: 'hello' });
+    expect(result.content).toBe('');
+    expect(result.error).toMatch(/Anthropic returned malformed response \(no content array\)/);
+    expect(result.usage).toBeDefined();
+    expect(result.usage.estimated).toBe(true);
+  });
+
+  test('Anthropic provider 200 with no content field returns error', async () => {
+    await saveConfig({
+      provider: 'anthropic',
+      baseUrl: 'https://api.anthropic.com/v1',
+      apiKey: 'sk-ant-test',
+      model: 'claude-3-haiku-20240307',
+      maxTokens: 512
+    });
+
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      headers: { get: () => null },
+      json: async () => ({ id: 'msg_abc', type: 'message' })
+    });
+
+    const result = await chat({ userMessage: 'hello' });
+    expect(result.content).toBe('');
+    expect(result.error).toMatch(/Anthropic returned malformed response \(no content array\)/);
+  });
+});

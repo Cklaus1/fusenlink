@@ -12,7 +12,8 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 
 const PORT = parseInt(process.argv[2] || '9876', 10);
-const REPO_ROOT = path.resolve(import.meta.dirname, '..');
+// Lives at cdp-shell/scripts/ → repo root is two levels up.
+const REPO_ROOT = path.resolve(import.meta.dirname, '..', '..');
 
 // Minimal page-side polyfill — no Node bridge needed for this read-only test.
 // Just makes chrome.runtime / chrome.storage no-op so the bundle loads and

@@ -22,18 +22,23 @@ export async function storeData(collection, data, options = {}) {
     const existing = await get(storageKey);
 
     if (options.mergeKey && Array.isArray(data)) {
-      // Merge by key — upsert items
+      // Merge by key — upsert items, track skipped items missing the merge field
       const items = existing.items || {};
+      let stored = 0;
+      let skipped = 0;
       for (const item of data) {
         const key = item[options.mergeKey];
         if (key) {
           items[key] = { ...items[key], ...item, updatedAt: new Date().toISOString() };
+          stored++;
+        } else {
+          skipped++;
         }
       }
       existing.items = items;
       existing.updatedAt = new Date().toISOString();
       await set(storageKey, existing);
-      return { success: true, count: data.length };
+      return { success: true, count: stored, skipped };
     }
 
     if (Array.isArray(data)) {
@@ -46,14 +51,14 @@ export async function storeData(collection, data, options = {}) {
       existing.entries = existing.entries.concat(timestamped);
       existing.updatedAt = new Date().toISOString();
       await set(storageKey, existing);
-      return { success: true, count: data.length };
+      return { success: true, count: data.length, skipped: 0 };
     }
 
     // Single object — store directly
     existing.data = data;
     existing.updatedAt = new Date().toISOString();
     await set(storageKey, existing);
-    return { success: true, count: 1 };
+    return { success: true, count: 1, skipped: 0 };
   });
 }
 

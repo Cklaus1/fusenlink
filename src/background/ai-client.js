@@ -81,6 +81,13 @@ async function getConfig() {
  * @returns {Promise<void>}
  */
 export async function saveConfig(config) {
+  // Bug 6: Validate apiKey for non-localhost providers
+  if (config.baseUrl && !/^https?:\/\/(localhost|127\.0\.0\.1)/i.test(config.baseUrl)) {
+    if (!config.apiKey || !config.apiKey.trim()) {
+      return { success: false, error: 'apiKey is required for non-localhost providers' };
+    }
+  }
+
   const newProvider = config.provider;
   const newBaseUrl = config.baseUrl;
   // Abort only controllers issued against a different provider/baseUrl
@@ -93,7 +100,7 @@ export async function saveConfig(config) {
   cachedConfig = { ...DEFAULT_AI_CONFIG, ...config };
   configLoading = null;
   return new Promise((resolve) => {
-    chrome.storage.local.set({ [STORAGE_KEYS.AI_CONFIG]: cachedConfig }, resolve);
+    chrome.storage.local.set({ [STORAGE_KEYS.AI_CONFIG]: cachedConfig }, () => resolve({ success: true }));
   });
 }
 
@@ -312,6 +319,14 @@ async function fetchOpenAICompat(config, body) {
     throw err;
   }
 
+  // Bug 18: validate response shape — choices array must be present and non-empty
+  if (!Array.isArray(data.choices) || data.choices.length === 0) {
+    const err = new Error(`Provider returned malformed response (no choices array)`);
+    err.retryable = false;
+    err.bodyDetail = JSON.stringify(data).slice(0, 500);
+    throw err;
+  }
+
   const content = data.choices?.[0]?.message?.content || '';
 
   // Bug 24: Prefer response headers for usage hints when available.
@@ -393,6 +408,14 @@ async function fetchAnthropic(config, messages, body) {
     const err = new Error(`Provider returned error: ${msg}`);
     err.retryable = false;
     err.bodyDetail = JSON.stringify(data.error).slice(0, 500);
+    throw err;
+  }
+
+  // Bug 18: validate response shape — content array must be present and non-empty
+  if (!Array.isArray(data.content) || data.content.length === 0) {
+    const err = new Error(`Anthropic returned malformed response (no content array)`);
+    err.retryable = false;
+    err.bodyDetail = JSON.stringify(data).slice(0, 500);
     throw err;
   }
 

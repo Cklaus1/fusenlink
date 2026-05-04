@@ -131,7 +131,7 @@ function buildWrappedBundle(bundle) {
  * to a new CDP client (used by the auto-reattach path). Pending deliveries are
  * carried across reconnects so an in-flight playbook can still resolve.
  */
-function createRouter() {
+function createRouter({ bindingName = '__fusenlink_cdpSend' } = {}) {
   const pendingDeliveries = new Map();
   let nextDeliverId = 1;
   let currentRuntime = null;
@@ -155,7 +155,7 @@ function createRouter() {
     currentRuntime = Runtime;
 
     client.on('Runtime.bindingCalled', async ({ name, payload }) => {
-      if (name !== '__fusenlink_cdpSend') return;
+      if (name !== bindingName) return;
 
       let parsed;
       try {
@@ -262,7 +262,7 @@ function createRouter() {
     catch { /* listener API may not support remove */ }
   }
 
-  return { attach, deliver, dispose };
+  return { attach, deliver, dispose, pendingDeliveries };
 }
 
 /**
@@ -284,6 +284,14 @@ export async function connect(opts = {}) {
   dbg('ensureInitialized');
   await ensureInitialized();
 
+  // Bug 5 fix: scope the page→node binding name to a per-attach session id.
+  // Chrome's binding namespace allows multiple Runtime.addBinding registrations
+  // for the same name, but only one fires per call — meaning two `attach`
+  // processes on the same Chrome would steal each other's bridge messages.
+  // A unique name per session keeps each Node↔page channel isolated.
+  const sessionId = Math.random().toString(36).slice(2, 10);
+  const bindingName = `__fusenlink_cdpSend_${sessionId}`;
+
   // State carried across (potential) reconnects.
   const state = {
     host,
@@ -292,6 +300,8 @@ export async function connect(opts = {}) {
     tabId: opts.tabId,
     persist: !!opts.persist,
     sessionAlive: true,
+    sessionId,
+    bindingName,
     bridge: null,
     bundle: null,
     wrappedBundle: null,
@@ -348,7 +358,10 @@ export async function connect(opts = {}) {
     state.chunkSources = [];
   }
 
-  const router = createRouter();
+  const router = createRouter({ bindingName });
+  // Expose to outer state so reattach give-up logic can reject pending
+  // deliveries (Bug 15 fix).
+  state.pendingDeliveries = router.pendingDeliveries;
 
   /**
    * Find a target, attach a fresh CDP client, register the binding + listeners,
@@ -375,11 +388,18 @@ export async function connect(opts = {}) {
     await Page.enable();
 
     // Expose the page→node binding (must be re-added on every fresh client).
-    dbg('addBinding');
-    await Runtime.addBinding({ name: '__fusenlink_cdpSend' });
+    // Bug 5 fix: use a session-scoped binding name so multiple shells driving
+    // the same Chrome don't clobber each other.
+    dbg(`addBinding (${bindingName})`);
+    await Runtime.addBinding({ name: bindingName });
 
     // Wire (or re-wire) the router to this client.
     router.attach(client);
+
+    // Tell the page bridge which binding name to dispatch through. This must
+    // be evaluated BEFORE the bridge runs (and re-registered on every new
+    // document when persistent) so the bridge can pick up the right function.
+    const prelude = `window.__fusenlink_cdpSendName = ${JSON.stringify(bindingName)};`;
 
     if (state.persist) {
       // Remove any previously registered persistent scripts. Without this,
@@ -399,7 +419,10 @@ export async function connect(opts = {}) {
       }
       state.registeredScriptIds = remainingIds;
 
-      dbg('addScriptToEvaluateOnNewDocument (bridge+chunks+bundle persistent)');
+      dbg('addScriptToEvaluateOnNewDocument (prelude+bridge+chunks+bundle persistent)');
+      // Prelude must run before the bridge so the bridge sees the binding name.
+      const r0 = await Page.addScriptToEvaluateOnNewDocument({ source: prelude });
+      state.registeredScriptIds.push(r0.identifier);
       const r1 = await Page.addScriptToEvaluateOnNewDocument({ source: state.bridge });
       state.registeredScriptIds.push(r1.identifier);
       // Pre-register all webpack chunk bundles before the entry, so dynamic
@@ -412,6 +435,8 @@ export async function connect(opts = {}) {
       state.registeredScriptIds.push(r2.identifier);
     }
 
+    dbg('inject prelude (current document)');
+    await Runtime.evaluate({ expression: prelude, returnByValue: false });
     dbg('inject bridge (current document)');
     await Runtime.evaluate({ expression: state.bridge, returnByValue: false });
     // Bug 26 fix: pre-evaluate all webpack chunks before the entry bundle so
@@ -447,6 +472,14 @@ export async function connect(opts = {}) {
     if (state.reattachAttempts >= MAX_REATTACH_ATTEMPTS) {
       console.warn(`[shell] Reattach gave up after ${MAX_REATTACH_ATTEMPTS} attempts. Use 'attach' command to retry manually.`);
       state.sessionAlive = false;
+      // Bug 15 fix: reject any pending deliveries so callers don't hang
+      // forever waiting for a response from a page that's never coming back.
+      if (state.pendingDeliveries) {
+        for (const cb of state.pendingDeliveries.values()) {
+          try { cb({ error: 'session_disconnected: reattach with attach command' }); } catch { /* ignore */ }
+        }
+        state.pendingDeliveries.clear();
+      }
       return;
     }
     state.reconnecting = true;
@@ -481,12 +514,23 @@ export async function connect(opts = {}) {
     get target() { return state.target; },
     get client() { return state.client; },
     async run(playbookId) {
+      // Bug 15 fix: short-circuit when the session is known-dead so commands
+      // surface a clear error instead of hanging on a vanished page.
+      if (!state.sessionAlive) {
+        return { error: 'Session disconnected. Run `fusenlink-cdp attach` to re-establish.' };
+      }
       return router.deliver({ type: 'runPlaybook', playbookId });
     },
     async stop() {
+      if (!state.sessionAlive) {
+        return { error: 'Session disconnected. Run `fusenlink-cdp attach` to re-establish.' };
+      }
       return router.deliver({ type: 'stopPlaybook' });
     },
     async status() {
+      if (!state.sessionAlive) {
+        return { error: 'Session disconnected. Run `fusenlink-cdp attach` to re-establish.' };
+      }
       return router.deliver({ type: 'getPlaybookStatus' });
     },
     /** Force a reattach (find a new target, re-inject). Exposed for callers. */

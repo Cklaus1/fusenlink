@@ -13,6 +13,18 @@ const tokenFromFile = (() => {
 })();
 const AUTH_TOKEN = process.env.FUSENLINK_TOKEN || tokenFromFile || '';
 
+// Bug 7 fix: fail fast at module load time if no token is available.
+// Skip the check for help / no-command invocations so `fusenlink --help`
+// still works without a running sidecar.
+const HELP_COMMANDS = new Set(['--help', '-h', 'help', undefined, null, '']);
+const _cliCommand = process.argv[2];
+if (!AUTH_TOKEN && !HELP_COMMANDS.has(_cliCommand)) {
+  console.error('No sidecar auth token found.');
+  console.error('  - Start the sidecar:  cd sidecar && npm start');
+  console.error('  - Or set:             export FUSENLINK_TOKEN=<token>');
+  process.exit(1);
+}
+
 /**
  * Make an HTTP request to the sidecar.
  * @param {string} method - GET or POST
@@ -24,9 +36,7 @@ function request(method, path, body) {
   return new Promise((resolve, reject) => {
     const url = new URL(path, BASE_URL);
     const headers = { 'Content-Type': 'application/json' };
-    if (AUTH_TOKEN) {
-      headers['Authorization'] = `Bearer ${AUTH_TOKEN}`;
-    }
+    headers['Authorization'] = `Bearer ${AUTH_TOKEN}`;
 
     const options = {
       hostname: url.hostname,

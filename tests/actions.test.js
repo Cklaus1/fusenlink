@@ -421,6 +421,62 @@ describe('Trust levels', () => {
   });
 });
 
+// Bug 23: storeData should tag every persisted item with the engine's
+// current runId so rows can be correlated back to the run that wrote them.
+describe('storeData runId tagging (Bug 23)', () => {
+  let originalSendMessage;
+  beforeEach(() => {
+    originalSendMessage = chrome.runtime.sendMessage.getMockImplementation();
+  });
+  afterEach(() => {
+    chrome.runtime.sendMessage.mockImplementation(originalSendMessage);
+  });
+
+  test('array of objects: each item gets engine._runId injected', async () => {
+    const sent = [];
+    chrome.runtime.sendMessage.mockImplementation((message, callback) => {
+      sent.push(message);
+      callback({ success: true });
+    });
+
+    const playbook = makePlaybook([
+      { action: 'setVar', var: 'people', value: [{ name: 'A' }, { name: 'B' }] },
+      { action: 'storeData', collection: 'contacts', data: '$people', mergeKey: 'name' }
+    ]);
+    const engine = new PlaybookEngine(playbook, emptyRegistry);
+    await engine.run();
+
+    const storeCall = sent.find(m => m.action === 'storeData');
+    expect(storeCall).toBeDefined();
+    expect(Array.isArray(storeCall.data)).toBe(true);
+    expect(storeCall.data).toHaveLength(2);
+    expect(typeof engine._runId).toBe('string');
+    for (const item of storeCall.data) {
+      expect(item.runId).toBe(engine._runId);
+    }
+  });
+
+  test('single object: runId is injected onto the object', async () => {
+    const sent = [];
+    chrome.runtime.sendMessage.mockImplementation((message, callback) => {
+      sent.push(message);
+      callback({ success: true });
+    });
+
+    const playbook = makePlaybook([
+      { action: 'setVar', var: 'one', value: { name: 'Solo' } },
+      { action: 'storeData', collection: 'contacts', data: '$one' }
+    ]);
+    const engine = new PlaybookEngine(playbook, emptyRegistry);
+    await engine.run();
+
+    const storeCall = sent.find(m => m.action === 'storeData');
+    expect(storeCall).toBeDefined();
+    expect(storeCall.data.name).toBe('Solo');
+    expect(storeCall.data.runId).toBe(engine._runId);
+  });
+});
+
 describe('Navigate action', () => {
   test('default same-origin navigation calls window.location.assign', async () => {
     const playbook = makePlaybook([

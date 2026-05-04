@@ -17,8 +17,14 @@ chrome.runtime.onInstalled.addListener(async () => {
   await initializeDefaults();
 });
 
-// Restore state on startup (service worker wake)
+// Bug 16: also re-run on browser/service-worker startup. onInstalled does
+// NOT fire when the user toggles the extension off and back on, so any
+// migration that should have run during that cycle was being skipped.
+// initializeDefaults is idempotent (only seeds when keys are missing or
+// when the shipped version is higher than what's stored), so re-running
+// here is safe.
 chrome.runtime.onStartup.addListener(async () => {
+  await initializeDefaults();
   // Scheduler restores alarms on init
 });
 

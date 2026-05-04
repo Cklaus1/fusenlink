@@ -19,6 +19,20 @@
  * }
  */
 
+/**
+ * Sequence settings schema:
+ * {
+ *   staggerMinutes: number,       // default 1; minutes between consecutive enrolled contacts' first sends
+ *   quietHoursStart: number,      // default 8; hour-of-day in `timezone` when sending is allowed
+ *   quietHoursEnd: number,        // default 20; hour-of-day when sending stops
+ *   timezone: string,             // default 'UTC'; IANA timezone for quiet hours
+ *   weekdaysOnly: boolean,        // default false (true for new sequences); skip Sat/Sun
+ *   delayMs: number,              // default 1500; ms between actions during a single send batch
+ *   securityCheckEnabled: boolean,// default true; pause for CAPTCHA detection
+ *   securityCheckInterval: number // default 5; check every N sends
+ * }
+ */
+
 import { STORAGE_KEYS } from '../shared/constants.js';
 import { MSG } from '../shared/messages.js';
 import * as AI from './ai-client.js';
@@ -144,11 +158,11 @@ export function nextSendableTime(timestampMs, sequence) {
     return timestampMs;
   }
   let t = timestampMs;
-  // Bounded loop: ~96 iterations is plenty. Worst case is a weekend Sat at
-  // 23:59 UTC which needs ~57 hour-bumps to reach Monday 8am. Capping at 96
-  // covers any TZ + DST + weekend combination without risk of an infinite
-  // loop on weird timezone data.
-  for (let i = 0; i < 96; i++) {
+  // Bounded loop: 192 iterations (8 days) covers worst-case combinations
+  // including narrow quiet windows + weekdaysOnly + weekend gaps. The previous
+  // 96-iteration cap could return an out-of-window time when the configuration
+  // required searching past a full weekend with a narrow quiet-hour band.
+  for (let i = 0; i < 24 * 8; i++) {
     if (!isSendableDay(t, tz, sequence)) {
       t += 60 * 60 * 1000; // bump 1 hour at a time so weekend exit naturally
                             // lands on the very first hour of the next weekday,
@@ -161,6 +175,9 @@ export function nextSendableTime(timestampMs, sequence) {
     // Advance one hour and re-check. Cheap and DST-safe.
     t += 60 * 60 * 1000;
   }
+  // No valid window found in 8 days — log and fall back to the last
+  // attempted time. Indicates an invalid quietHours/weekdaysOnly configuration.
+  console.warn(`Sequence ${sequence?.id || '(unknown)'}: no sendable window found in 8 days; check quietHours/weekdaysOnly settings`);
   return t;
 }
 
@@ -559,43 +576,48 @@ export async function recordMessageSent(sequenceId, profileUrl, messageText) {
 }
 
 /**
- * Bug 31: re-stagger pending contacts in a sequence after settings change.
+ * Bug 31 / Bug 26: re-stagger active contacts in a sequence after settings change.
  *
  * When a user updates `staggerMinutes` (or quiet-hours / timezone /
  * weekdaysOnly) on a sequence, that change normally only affects future
  * enrollments — the existing contacts keep the `nextMessageAt` they got
- * when they were enrolled. This export lets callers (CLI / tests) recompute
- * pending contacts' send times against the current settings.
+ * when they were enrolled. This export lets callers (CLI / message router)
+ * recompute send times against the current settings.
  *
- * Only contacts that are still untouched are re-staggered:
- *   - status === 'active'
- *   - messages.length === 0 (no message has been sent yet)
- * Contacts mid-sequence (already received a message) keep their schedule
- * because their delay is anchored to lastMessageAt, not the enrollment time.
+ * Re-staggers ALL active contacts (both initial-batch and mid-sequence):
+ *   - Initial batch (no messages yet): gets a new staggered first-send time.
+ *   - Mid-sequence (already received messages): gets a new `nextMessageAt`
+ *     while preserving `lastMessageAt`. Their next message is restaggered
+ *     into the new window — useful when the user widens/narrows the
+ *     campaign's send window or shifts timezone.
  *
- * The message-router file is owned by another agent, so this is intentionally
- * not surfaced through the routing layer here. Callers invoke directly.
+ * Skips contacts whose status is not 'active' (replied/completed) and
+ * those that have no `nextMessageAt` (nothing scheduled to restagger).
  *
  * @param {string} sequenceId
- * @returns {Promise<{restaggered: number}|undefined>}
+ * @returns {Promise<{restaggered: number}|{error: string}>}
  */
 export async function restagger(sequenceId) {
   return withLock(async () => {
     const sequences = await getSequences();
     const sequence = sequences.items?.[sequenceId];
-    if (!sequence) return;
+    if (!sequence) return { error: 'sequence not found' };
     const stagger = (sequence.settings?.staggerMinutes ?? DEFAULT_STAGGER_MINUTES) * 60 * 1000;
     const baseTime = Date.now();
     let i = 0;
+    let restaggered = 0;
     for (const contact of Object.values(sequence.contacts || {})) {
-      // Only restagger contacts that haven't been messaged yet.
-      if (contact.status !== 'active' || (contact.messages?.length || 0) > 0) continue;
-      contact.nextMessageAt = new Date(nextSendableTime(baseTime + (i * stagger), sequence)).toISOString();
+      if (contact.status !== 'active') continue;
+      // Only restagger contacts with a future nextMessageAt set.
+      if (!contact.nextMessageAt) continue;
+      const desiredTs = baseTime + (i * stagger);
+      contact.nextMessageAt = new Date(nextSendableTime(desiredTs, sequence)).toISOString();
       i++;
+      restaggered++;
     }
     sequence.updatedAt = new Date().toISOString();
     await saveSequences(sequences);
-    return { restaggered: i };
+    return { restaggered };
   });
 }
 

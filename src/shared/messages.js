@@ -56,6 +56,7 @@ export const MSG = {
   RECORD_MESSAGE_SENT: 'recordMessageSent',
   SET_SEQUENCE_STATUS: 'setSequenceStatus',
   CHECK_REPLIES: 'checkReplies',
+  RESTAGGER_SEQUENCE: 'restaggerSequence',
 
   // Cohort
   GET_COHORT: 'getCohort',
