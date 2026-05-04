@@ -64,9 +64,14 @@ export const DEFAULT_SELECTOR_REGISTRIES = {
   },
 
   'linkedin.search': {
-    version: 2,
+    version: 3,
     searchResultCard: {
       strategies: [
+        // 2026 lite UI: results live inside a lazy-column with role=list
+        { type: 'css', value: '[data-testid="lazy-column"] [role="listitem"]' },
+        { type: 'css', value: 'main [role="list"] > [role="listitem"]' },
+        { type: 'css', value: 'main [role="listitem"]' },
+        // Legacy fallbacks
         { type: 'css', value: '.reusable-search__result-container' },
         { type: 'css', value: '[class*="entity-result"]' },
         { type: 'css', value: 'li[class*="reusable-search__result-container"]' },
@@ -77,6 +82,12 @@ export const DEFAULT_SELECTOR_REGISTRIES = {
     },
     connectButton: {
       strategies: [
+        // 2026 lite UI: Connect is now an <a> element with a preload href
+        { type: 'css', value: 'a[href*="/preload/search-custom-invite"]' },
+        { type: 'css', value: 'a[aria-label^="Invite"][aria-label$="to connect"]' },
+        // Profile-style aria-label (still appears for some surfaces)
+        { type: 'css', value: 'button[aria-label^="Invite"][aria-label$="to connect"]' },
+        // Legacy fallbacks
         { type: 'textExact', value: 'button,a', text: 'Connect' },
         { type: 'ariaLabel', value: 'a', pattern: 'nvite.*onnect' },
         { type: 'css', value: 'button[aria-label^="Invite"]' },
@@ -122,6 +133,8 @@ export const DEFAULT_SELECTOR_REGISTRIES = {
     },
     nextPageButton: {
       strategies: [
+        // 2026 lite UI: Next has no aria-label, only textContent="Next"
+        { type: 'cssWithText', value: 'main button', text: 'Next' },
         { type: 'css', value: 'button[aria-label="Next"]' },
         { type: 'css', value: '.artdeco-pagination__button--next' },
         { type: 'css', value: 'a[aria-label="Next"]' },
@@ -142,9 +155,14 @@ export const DEFAULT_SELECTOR_REGISTRIES = {
   },
 
   'linkedin.search-extract': {
-    version: 2,
+    version: 3,
     searchResultCard: {
       strategies: [
+        // 2026 lite UI
+        { type: 'css', value: '[data-testid="lazy-column"] [role="listitem"]' },
+        { type: 'css', value: 'main [role="list"] > [role="listitem"]' },
+        { type: 'css', value: 'main [role="listitem"]' },
+        // Legacy
         { type: 'css', value: '.reusable-search__result-container' },
         { type: 'css', value: '[class*="entity-result"]' },
         { type: 'css', value: 'li[class*="reusable-search__result-container"]' },
@@ -155,6 +173,11 @@ export const DEFAULT_SELECTOR_REGISTRIES = {
     },
     cardName: {
       strategies: [
+        // 2026 lite UI: text is on the /in/ anchor itself; second anchor for the same /in/ contains pure name (no metadata)
+        { type: 'css', value: 'a[href*="/in/"] > span > span' },
+        { type: 'css', value: 'p > a[href*="/in/"]' },
+        { type: 'css', value: 'a[href*="/in/"]:not([aria-hidden]) span' },
+        // Legacy
         { type: 'css', value: '.entity-result__title-text a span[aria-hidden="true"]' },
         { type: 'css', value: '[data-anonymize="person-name"]' },
         { type: 'css', value: '[class*="entity-result__title"] a span[aria-hidden="true"]' },
@@ -163,6 +186,7 @@ export const DEFAULT_SELECTOR_REGISTRIES = {
     },
     cardHeadline: {
       strategies: [
+        // Legacy
         { type: 'css', value: '.entity-result__primary-subtitle' },
         { type: 'css', value: '[data-anonymize="headline"]' },
         { type: 'css', value: '[class*="entity-result__primary-subtitle"]' },
@@ -171,8 +195,10 @@ export const DEFAULT_SELECTOR_REGISTRIES = {
     },
     cardLink: {
       strategies: [
-        { type: 'css', value: '.entity-result__title-text a' },
+        // 2026 lite UI: any /in/ anchor inside the card
         { type: 'css', value: 'a[href*="/in/"]' },
+        // Legacy
+        { type: 'css', value: '.entity-result__title-text a' },
         { type: 'css', value: '[class*="entity-result__title"] a[href*="/in/"]' }
       ]
     },
@@ -191,6 +217,8 @@ export const DEFAULT_SELECTOR_REGISTRIES = {
     },
     nextPageButton: {
       strategies: [
+        // 2026 lite UI: Next has no aria-label, only textContent="Next"
+        { type: 'cssWithText', value: 'main button', text: 'Next' },
         { type: 'css', value: 'button[aria-label="Next"]' },
         { type: 'css', value: '.artdeco-pagination__button--next' },
         { type: 'css', value: 'button[class*="pagination"][class*="next"]' },
@@ -201,9 +229,13 @@ export const DEFAULT_SELECTOR_REGISTRIES = {
   },
 
   'linkedin.profile': {
-    version: 2,
+    version: 3,
     profileName: {
       strategies: [
+        // 2026 lite UI: name is the first <h2> inside <main>
+        { type: 'css', value: 'main h2:first-of-type' },
+        { type: 'css', value: 'main h2' },
+        // Legacy fallbacks
         { type: 'css', value: '.text-heading-xlarge' },
         { type: 'css', value: 'h1[class*="text-heading"]' },
         { type: 'css', value: 'h1' },
@@ -213,6 +245,11 @@ export const DEFAULT_SELECTOR_REGISTRIES = {
     },
     profileHeadline: {
       strategies: [
+        // 2026 lite UI: headline is first <p> in the top-card block (sibling of the visible name div)
+        // The h2 with the name is hidden; the visible name lives in a div above the headline <p>.
+        // Walk-from-h2 isn't expressible in pure CSS, so we look for the first <p> inside main.
+        { type: 'css', value: 'main p:first-of-type' },
+        // Legacy fallbacks
         { type: 'css', value: '.text-body-medium[data-anonymize="headline"]' },
         { type: 'css', value: '[data-anonymize="headline"]' },
         { type: 'css', value: '[class*="text-body-medium"][class*="break-words"]' },
@@ -221,6 +258,9 @@ export const DEFAULT_SELECTOR_REGISTRIES = {
     },
     profileLocation: {
       strategies: [
+        // 2026 lite UI: location is a <p> in a sibling container after the headline.
+        // No CSS hook is reliable; engine should walk up from headline.
+        // Legacy fallbacks
         { type: 'css', value: '.text-body-small[data-anonymize="location"]' },
         { type: 'css', value: '[data-anonymize="location"]' },
         { type: 'css', value: 'main .text-body-small.inline.t-black--light' },
@@ -229,6 +269,7 @@ export const DEFAULT_SELECTOR_REGISTRIES = {
     },
     profileAbout: {
       strategies: [
+        // Legacy
         { type: 'css', value: '#about ~ .display-flex .pv-shared-text-with-see-more span[aria-hidden="true"]' },
         { type: 'css', value: '[data-anonymize="person-summary-text"]' },
         { type: 'css', value: 'section[id*="about"] span[aria-hidden="true"]' },
@@ -238,6 +279,7 @@ export const DEFAULT_SELECTOR_REGISTRIES = {
     },
     profileExperience: {
       strategies: [
+        // Legacy
         { type: 'css', value: '#experience ~ .pvs-list__outer-container li.artdeco-list__item' },
         { type: 'css', value: '.pv-experience-section__list-item' },
         { type: 'css', value: 'section[id*="experience"] li.artdeco-list__item' },
@@ -247,6 +289,7 @@ export const DEFAULT_SELECTOR_REGISTRIES = {
     },
     profileEducation: {
       strategies: [
+        // Legacy
         { type: 'css', value: '#education ~ .pvs-list__outer-container li.artdeco-list__item' },
         { type: 'css', value: 'section[id*="education"] li.artdeco-list__item' },
         { type: 'css', value: 'div[data-section="education"] li' },
@@ -262,6 +305,10 @@ export const DEFAULT_SELECTOR_REGISTRIES = {
     },
     profileConnections: {
       strategies: [
+        // 2026 lite UI: "X followers" under Activity section heading
+        { type: 'css', value: 'a[href*="/connections"] strong' },
+        { type: 'css', value: 'a[href*="/connections"]' },
+        // Legacy
         { type: 'css', value: '.pv-top-card--list-bullet li span.t-bold' },
         { type: 'textMatch', value: 'span', text: 'connections' },
         { type: 'css', value: 'a[href*="/connections"] span.t-bold' },
@@ -270,6 +317,10 @@ export const DEFAULT_SELECTOR_REGISTRIES = {
     },
     profileImage: {
       strategies: [
+        // 2026 lite UI: profile photo is identified by src pattern (stable, not class)
+        { type: 'css', value: 'main img[src*="profile-displayphoto"]' },
+        { type: 'css', value: 'img[src*="profile-displayphoto"]' },
+        // Legacy
         { type: 'css', value: '.pv-top-card-profile-picture__image' },
         { type: 'css', value: 'img[data-anonymize="headshot-photo"]' },
         { type: 'css', value: 'img[class*="profile-picture"]' },
@@ -278,13 +329,18 @@ export const DEFAULT_SELECTOR_REGISTRIES = {
     },
     mainContent: {
       strategies: [
-        { type: 'css', value: 'main.scaffold-layout__main' },
         { type: 'css', value: 'main' },
+        { type: 'css', value: 'main.scaffold-layout__main' },
         { type: 'css', value: '[class*="scaffold-layout__main"]' }
       ]
     },
     messageButton: {
       strategies: [
+        // 2026 lite UI: Message is now an <a> with messaging/compose href
+        { type: 'css', value: 'a[href*="messaging/compose"][aria-label^="Message"]' },
+        { type: 'css', value: 'a[href*="messaging/compose"]' },
+        { type: 'css', value: 'a[aria-label^="Message"]' },
+        // Legacy
         { type: 'textExact', value: 'button,a', text: 'Message' },
         { type: 'css', value: 'button[aria-label*="Message"]' },
         { type: 'css', value: 'a[aria-label*="Message"]' },
@@ -294,6 +350,10 @@ export const DEFAULT_SELECTOR_REGISTRIES = {
     },
     connectButton: {
       strategies: [
+        // 2026 lite UI
+        { type: 'css', value: 'button[aria-label^="Invite"][aria-label$="to connect"]' },
+        { type: 'css', value: 'a[href*="/preload/search-custom-invite"]' },
+        // Legacy
         { type: 'textExact', value: 'button,a', text: 'Connect' },
         { type: 'css', value: 'button[aria-label*="connect"]' },
         { type: 'css', value: 'button[aria-label^="Invite"]' },
@@ -304,6 +364,10 @@ export const DEFAULT_SELECTOR_REGISTRIES = {
     },
     recentPost: {
       strategies: [
+        // 2026 lite UI: posts in the Activity section appear as listitems within main
+        { type: 'css', value: 'main [role="listitem"]' },
+        { type: 'css', value: 'main [data-testid="lazy-column"] [role="listitem"]' },
+        // Legacy
         { type: 'css', value: '.pv-recent-activity-section__feed-item' },
         { type: 'css', value: '[data-urn*="activity"]' },
         { type: 'css', value: '.feed-shared-update-v2' },
@@ -314,6 +378,7 @@ export const DEFAULT_SELECTOR_REGISTRIES = {
     },
     postText: {
       strategies: [
+        // Legacy
         { type: 'css', value: '.feed-shared-update-v2__description-wrapper span' },
         { type: 'css', value: '.feed-shared-text' },
         { type: 'css', value: '[class*="feed-shared-text"]' },
@@ -322,6 +387,9 @@ export const DEFAULT_SELECTOR_REGISTRIES = {
     },
     postStats: {
       strategies: [
+        // 2026 lite UI: reactions count is a [role="button"] with the count text
+        { type: 'css', value: '[role="button"][aria-label*="reaction"]' },
+        // Legacy
         { type: 'css', value: '.social-details-social-counts' },
         { type: 'css', value: '.social-details-social-activity' },
         { type: 'css', value: '[class*="social-details-social-counts"]' },
@@ -332,6 +400,10 @@ export const DEFAULT_SELECTOR_REGISTRIES = {
     },
     likeButton: {
       strategies: [
+        // 2026 lite UI: aria-label is "Reaction button state: no reaction" / "thumbs up"
+        { type: 'css', value: 'button[aria-label^="Reaction button state"]' },
+        { type: 'css', value: 'button[aria-label*="Reaction button"]' },
+        // Legacy
         { type: 'css', value: 'button[aria-label*="Like"]' },
         { type: 'css', value: 'button.react-button__trigger[aria-label*="like"]' },
         { type: 'css', value: 'button[aria-label*="like"]' },
@@ -434,9 +506,15 @@ export const DEFAULT_SELECTOR_REGISTRIES = {
   },
 
   'linkedin.connections': {
-    version: 2,
+    version: 3,
     connectionCard: {
       strategies: [
+        // 2026 lite UI: card has a "More actions for X" button — locate via that aria-label and walk up if needed
+        // The card itself is the closest ancestor div containing both the More-actions button and an /in/ link
+        { type: 'css', value: '[data-testid="lazy-column"] > div > div:has(a[href*="/in/"]):has(button[aria-label^="More actions"])' },
+        { type: 'css', value: 'main div:has(> a[href*="/in/"]):has(button[aria-label^="More actions"])' },
+        { type: 'css', value: '[data-testid="lazy-column"] [role="listitem"]' },
+        // Legacy
         { type: 'css', value: 'li.mn-connection-card' },
         { type: 'css', value: '.mn-connection-card' },
         { type: 'css', value: 'div[class*="connection-card"]' },
@@ -447,6 +525,10 @@ export const DEFAULT_SELECTOR_REGISTRIES = {
     },
     connectionName: {
       strategies: [
+        // 2026 lite UI: name is text content of the visible /in/ anchor
+        { type: 'css', value: 'a[href*="/in/"] p' },
+        { type: 'css', value: 'main p:first-of-type' },
+        // Legacy
         { type: 'css', value: '.mn-connection-card__name' },
         { type: 'css', value: '[data-anonymize="person-name"]' },
         { type: 'css', value: '[class*="mn-connection-card__name"]' },
@@ -455,6 +537,7 @@ export const DEFAULT_SELECTOR_REGISTRIES = {
     },
     connectionHeadline: {
       strategies: [
+        // Legacy (text patterns + DOM walk handle 2026 lite UI at the resolver level)
         { type: 'css', value: '.mn-connection-card__occupation' },
         { type: 'css', value: '[data-anonymize="headline"]' },
         { type: 'css', value: '[class*="mn-connection-card__occupation"]' },
@@ -463,6 +546,10 @@ export const DEFAULT_SELECTOR_REGISTRIES = {
     },
     connectionLink: {
       strategies: [
+        // 2026 lite UI: any /in/ anchor in the connections lazy column
+        { type: 'css', value: '[data-testid="lazy-column"] a[href*="/in/"]' },
+        { type: 'css', value: 'main a[href*="/in/"]' },
+        // Legacy
         { type: 'css', value: '.mn-connection-card__link' },
         { type: 'css', value: 'a[href*="/in/"]' },
         { type: 'css', value: '[class*="mn-connection-card"] a[href*="/in/"]' }
@@ -470,6 +557,8 @@ export const DEFAULT_SELECTOR_REGISTRIES = {
     },
     connectionDate: {
       strategies: [
+        // 2026 lite UI: text appears as "Connected on <date>" in a <p> — no <time> element
+        // Legacy fallbacks first; resolver-level text matching handles the rest
         { type: 'css', value: '.mn-connection-card__connected-time' },
         { type: 'css', value: 'time' },
         { type: 'css', value: '[class*="mn-connection-card__connected"]' },
@@ -478,6 +567,8 @@ export const DEFAULT_SELECTOR_REGISTRIES = {
     },
     nextPageButton: {
       strategies: [
+        // 2026 lite UI: connections page uses infinite scroll — no Next button
+        { type: 'cssWithText', value: 'main button', text: 'Next' },
         { type: 'css', value: 'button[aria-label="Next"]' },
         { type: 'css', value: '.artdeco-pagination__button--next' },
         { type: 'css', value: 'button[class*="pagination"][class*="next"]' },
@@ -535,9 +626,13 @@ export const DEFAULT_SELECTOR_REGISTRIES = {
   },
 
   'linkedin.feed': {
-    version: 2,
+    version: 3,
     feedPost: {
       strategies: [
+        // 2026 lite UI: each post is a [role="listitem"] inside the feed lazy column
+        { type: 'css', value: 'main [data-testid="lazy-column"] [role="listitem"]' },
+        { type: 'css', value: 'main [role="listitem"]' },
+        // Legacy
         { type: 'css', value: '.feed-shared-update-v2' },
         { type: 'css', value: '[data-urn*="activity"]' },
         { type: 'css', value: '.occludable-update' },
@@ -548,6 +643,10 @@ export const DEFAULT_SELECTOR_REGISTRIES = {
     },
     postAuthor: {
       strategies: [
+        // 2026 lite UI: author /in/ link inside the post; first <p> with author name follows
+        { type: 'css', value: '[role="listitem"] a[href*="/in/"]' },
+        { type: 'css', value: 'main a[href*="/in/"]' },
+        // Legacy
         { type: 'css', value: '.feed-shared-actor__name span' },
         { type: 'css', value: '.update-components-actor__name span' },
         { type: 'css', value: '[class*="feed-shared-actor__name"] span' },
@@ -557,6 +656,10 @@ export const DEFAULT_SELECTOR_REGISTRIES = {
     },
     postText: {
       strategies: [
+        // 2026 lite UI: post body is direct <p> inside the listitem
+        { type: 'css', value: '[role="listitem"] p[dir="ltr"]' },
+        { type: 'css', value: 'main [role="listitem"] p' },
+        // Legacy
         { type: 'css', value: '.feed-shared-update-v2__description-wrapper span' },
         { type: 'css', value: '.feed-shared-text__text-view span' },
         { type: 'css', value: '.update-components-text span' },
@@ -567,6 +670,10 @@ export const DEFAULT_SELECTOR_REGISTRIES = {
     },
     postStats: {
       strategies: [
+        // 2026 lite UI: reaction count appears as a [role="button"] with reaction aria
+        { type: 'css', value: '[role="listitem"] [role="button"][aria-label*="reaction" i]' },
+        { type: 'css', value: '[role="listitem"] button[aria-label*="reaction" i]' },
+        // Legacy
         { type: 'css', value: '.social-details-social-counts' },
         { type: 'css', value: '.social-details-social-activity' },
         { type: 'css', value: '[class*="social-details-social-counts"]' },
@@ -577,6 +684,10 @@ export const DEFAULT_SELECTOR_REGISTRIES = {
     },
     likeButton: {
       strategies: [
+        // 2026 lite UI: aria-label looks like "Reaction button state: no reaction" or "Reaction button state: thumbs up"
+        { type: 'css', value: 'button[aria-label^="Reaction button state"]' },
+        { type: 'css', value: 'button[aria-label*="Reaction button"]' },
+        // Legacy
         { type: 'css', value: 'button[aria-label*="Like"]' },
         { type: 'css', value: 'button.react-button__trigger' },
         { type: 'css', value: 'button[aria-label*="like"]' },
@@ -587,6 +698,10 @@ export const DEFAULT_SELECTOR_REGISTRIES = {
     },
     commentButton: {
       strategies: [
+        // 2026 lite UI: aria-label is exactly "Comment" (no longer with post context)
+        { type: 'css', value: 'button[aria-label="Comment"]' },
+        { type: 'css', value: '[role="listitem"] button[aria-label^="Comment"]' },
+        // Legacy
         { type: 'css', value: 'button[aria-label*="Comment"]' },
         { type: 'css', value: 'button[aria-label*="comment"]' },
         { type: 'css', value: '[class*="comment-button"]' },
@@ -614,6 +729,10 @@ export const DEFAULT_SELECTOR_REGISTRIES = {
     },
     repostButton: {
       strategies: [
+        // 2026 lite UI: aria-label is exactly "Repost"
+        { type: 'css', value: 'button[aria-label="Repost"]' },
+        { type: 'css', value: '[role="listitem"] button[aria-label^="Repost"]' },
+        // Legacy
         { type: 'css', value: 'button[aria-label*="Repost"]' },
         { type: 'css', value: 'button[aria-label*="repost"]' },
         { type: 'css', value: '[class*="reshare"] button' },
@@ -632,7 +751,10 @@ export const DEFAULT_SELECTOR_REGISTRIES = {
     // Post creation
     startPostButton: {
       strategies: [
+        // 2026 lite UI: a div[role="button"] with text "Start a post"
+        { type: 'cssWithText', value: 'main [role="button"]', text: 'Start a post' },
         { type: 'css', value: '.share-box-feed-entry__trigger' },
+        // Legacy
         { type: 'textMatch', value: 'button', text: 'Start a post' },
         { type: 'css', value: '[class*="share-box-feed-entry__trigger"]' },
         { type: 'cssWithText', value: 'button', text: 'start a post' }

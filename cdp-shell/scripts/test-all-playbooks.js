@@ -38,6 +38,8 @@ function chooseUrlFor(pattern) {
     // Skip — test harness will note "no post URL available"
     return null;
   }
+  // Profile pattern (linkedin.com/in/) — use the user's own profile
+  if (pattern.includes('/in/') || pattern.includes('linkedin\\\\.com/in')) return 'https://www.linkedin.com/in/chklaus/';
   if (pattern.includes('feed')) return 'https://www.linkedin.com/feed/';
   if (pattern.match(/\\\.com\/$/)) return 'https://www.linkedin.com/';
   // Default: linkedin.com root
