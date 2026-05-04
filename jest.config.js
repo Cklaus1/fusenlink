@@ -9,10 +9,7 @@ module.exports = {
   collectCoverage: true,
   coverageDirectory: 'coverage',
   collectCoverageFrom: [
-    'background.js',
-    'invitations.js',
-    'search.js',
-    'lib/**/*.js'
+    'src/**/*.js'
   ],
   moduleFileExtensions: ['js'],
   verbose: true

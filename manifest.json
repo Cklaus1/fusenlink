@@ -1,17 +1,23 @@
 {
   "manifest_version": 3,
-  "name": "LinkedIn Bulk Actions",
-  "version": "1.0.0",
-  "description": "Automate accepting/denying invitations and sending connection requests on LinkedIn. Privacy policy: https://github.com/Cklaus1/fusenlink/blob/main/PRIVACY.md",
+  "name": "FusenLink — AI LinkedIn Automation",
+  "version": "2.0.0",
+  "description": "AI-powered LinkedIn automation: bulk actions, inbox analysis, profile review, contact extraction, and scheduled workflows. Privacy policy: https://github.com/Cklaus1/fusenlink/blob/main/PRIVACY.md",
   "author": "FusenLink",
   "homepage_url": "https://github.com/Cklaus1/fusenlink",
   "permissions": [
     "activeTab",
     "scripting",
-    "storage"
+    "storage",
+    "alarms",
+    "notifications"
+  ],
+  "host_permissions": [
+    "*://*.linkedin.com/*"
   ],
   "action": {
-    "default_title": "LinkedIn Bulk Actions",
+    "default_title": "FusenLink",
+    "default_popup": "popup.html",
     "default_icon": {
       "16": "icons/icon16.png",
       "48": "icons/icon48.png",
@@ -24,16 +30,15 @@
   "content_scripts": [
     {
       "matches": [
-        "*://*.linkedin.com/mynetwork/invitation-manager/*",
-        "*://*.linkedin.com/search/results/*"
+        "*://*.linkedin.com/*"
       ],
-      "js": ["content.js"]
+      "js": ["dist/content.bundle.js"]
     }
   ],
   "options_page": "options.html",
   "web_accessible_resources": [
     {
-      "resources": ["lib/*", "dist/*"],
+      "resources": ["dist/*"],
       "matches": ["*://*.linkedin.com/*"]
     }
   ],

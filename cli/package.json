@@ -1,0 +1,10 @@
+{
+  "name": "fusenlink-cli",
+  "version": "1.0.0",
+  "description": "CLI tool for controlling the FusenLink Chrome extension",
+  "bin": {
+    "fusenlink": "./bin/fusenlink.js"
+  },
+  "main": "bin/fusenlink.js",
+  "dependencies": {}
+}

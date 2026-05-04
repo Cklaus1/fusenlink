@@ -1,0 +1,178 @@
+/**
+ * WebSocket Bridge — connects the background service worker to the sidecar.
+ *
+ * The extension is the WebSocket CLIENT, connecting to the sidecar's WS server.
+ * This works in MV3 because outbound WebSocket connections are allowed.
+ *
+ * Auto-reconnects when the service worker wakes up or the connection drops.
+ */
+
+import { STORAGE_KEYS } from '../shared/constants.js';
+
+const RECONNECT_ALARM = 'ws-reconnect';
+const RECONNECT_MIN_MINUTES = 0.1;  // ~6 seconds
+const RECONNECT_MAX_MINUTES = 2;    // 2 minutes
+const MAX_RECONNECT_ATTEMPTS = 50;  // Switch to backstop retry after ~50 attempts
+const RECONNECT_BACKSTOP_MINUTES = 30; // Long-period retry once fast attempts exhausted
+
+let configuredHost = 'localhost';
+let configuredPort = 9333;
+
+let socket = null;
+let messageHandler = null;
+let reconnectDelay = RECONNECT_MIN_MINUTES; // Exponential backoff
+let reconnectAttempts = 0;
+
+function getWsUrl() {
+  return `ws://${configuredHost}:${configuredPort}/ws`;
+}
+
+async function loadSidecarConfig() {
+  return new Promise(resolve => {
+    chrome.storage.local.get(STORAGE_KEYS.SIDECAR, (result) => {
+      const cfg = result[STORAGE_KEYS.SIDECAR] || {};
+      configuredHost = cfg.host || 'localhost';
+      configuredPort = cfg.port || 9333;
+      resolve();
+    });
+  });
+}
+
+/**
+ * Initialize the WebSocket bridge.
+ * @param {Function} onMessage - Handler for messages from the sidecar.
+ *   Called with (message: Object, respond: (data: Object) => void)
+ */
+export async function initWsBridge(onMessage) {
+  messageHandler = onMessage;
+
+  // Listen for sidecar config changes — moved here so messageHandler is set
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area === 'local' && changes[STORAGE_KEYS.SIDECAR]) {
+      loadSidecarConfig().then(() => {
+        if (socket) { try { socket.close(); } catch {} socket = null; }
+        reconnectAttempts = 0;
+        reconnectDelay = RECONNECT_MIN_MINUTES;
+        connect();
+      });
+    }
+  });
+
+  // Listen for reconnect alarm (survives service worker death)
+  chrome.alarms.onAlarm.addListener((alarm) => {
+    if (alarm.name === RECONNECT_ALARM) {
+      connect();
+    }
+  });
+
+  await loadSidecarConfig();
+  connect();
+}
+
+/**
+ * Get the current WebSocket status.
+ * @returns {{connected: boolean}}
+ */
+export function getWsStatus() {
+  return {
+    connected: socket !== null && socket.readyState === WebSocket.OPEN
+  };
+}
+
+/**
+ * Connect to the sidecar WebSocket server.
+ */
+function connect() {
+  if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) {
+    return;
+  }
+
+  try {
+    socket = new WebSocket(getWsUrl());
+
+    socket.addEventListener('open', () => {
+      console.log('[ws-bridge] Connected to sidecar');
+      reconnectDelay = RECONNECT_MIN_MINUTES; // Reset backoff on success
+      reconnectAttempts = 0;
+      clearReconnect();
+    });
+
+    socket.addEventListener('message', (event) => {
+      let parsedRequestId;
+      try {
+        const msg = JSON.parse(event.data);
+        parsedRequestId = msg?._requestId;
+
+        // Validate message structure
+        if (!msg || typeof msg !== 'object') {
+          console.warn('[ws-bridge] Ignoring non-object message');
+          return;
+        }
+        if (!msg.action && !msg.type && !msg._requestId) {
+          console.warn('[ws-bridge] Ignoring message without action, type, or _requestId');
+          return;
+        }
+
+        if (messageHandler) {
+          const respond = (data) => {
+            send({ ...data, _requestId: parsedRequestId });
+          };
+
+          messageHandler(msg, respond);
+        }
+      } catch (err) {
+        console.error('[ws-bridge] Message parse error:', err);
+        // Use the requestId extracted before the error, if available
+        send({ error: 'Message parse error', _requestId: parsedRequestId });
+      }
+    });
+
+    socket.addEventListener('close', () => {
+      console.log('[ws-bridge] Disconnected from sidecar');
+      socket = null;
+      scheduleReconnect();
+    });
+
+    socket.addEventListener('error', () => {
+      // Error will be followed by close event — let close handler clean up
+    });
+  } catch (err) {
+    console.warn('[ws-bridge] Connection failed:', err.message);
+    scheduleReconnect();
+  }
+}
+
+/**
+ * Send a message to the sidecar.
+ * @param {Object} data
+ */
+function send(data) {
+  if (socket && socket.readyState === WebSocket.OPEN) {
+    socket.send(JSON.stringify(data));
+  }
+}
+
+/**
+ * Schedule a reconnection attempt using chrome.alarms (survives worker death).
+ * Uses exponential backoff: 6s → 12s → 24s → ... → 2min max.
+ */
+function scheduleReconnect() {
+  if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
+    // Don't give up entirely — back off to a long-period retry so the bridge
+    // recovers when the sidecar starts later.
+    console.warn('[ws-bridge] Max reconnect attempts reached, backing off to long-period retry');
+    chrome.alarms.create(RECONNECT_ALARM, { delayInMinutes: RECONNECT_BACKSTOP_MINUTES });
+    return;
+  }
+  reconnectAttempts++;
+  chrome.alarms.create(RECONNECT_ALARM, { delayInMinutes: reconnectDelay });
+  // Exponential backoff, capped at max
+  reconnectDelay = Math.min(reconnectDelay * 2, RECONNECT_MAX_MINUTES);
+}
+
+/**
+ * Cancel any pending reconnection.
+ */
+function clearReconnect() {
+  chrome.alarms.clear(RECONNECT_ALARM);
+}

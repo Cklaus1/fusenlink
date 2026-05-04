@@ -3,10 +3,10 @@ const path = require('path');
 module.exports = {
   mode: 'production',
   entry: {
-    background: './background.js',
-    invitations: './invitations.js',
-    search: './search.js',
-    options: './options.js'
+    background: './src/background/index.js',
+    content: './src/content/index.js',
+    options: './src/ui/options.js',
+    popup: './src/ui/popup.js'
   },
   output: {
     filename: '[name].bundle.js',

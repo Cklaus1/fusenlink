@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>LinkedIn Bulk Actions - Options</title>
+  <title>FusenLink Settings</title>
   <style>
     body {
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;
@@ -25,12 +25,18 @@
       margin-bottom: 5px;
       font-weight: 500;
     }
-    input[type="number"] {
+    input[type="number"], input[type="text"], input[type="password"], select {
       width: 100%;
       padding: 8px;
       border: 1px solid #ccc;
       border-radius: 4px;
       box-sizing: border-box;
+    }
+    h2 {
+      color: #0a66c2;
+      border-bottom: 1px solid #eee;
+      padding-bottom: 8px;
+      margin-top: 30px;
     }
     .description {
       font-size: 0.85rem;
@@ -66,7 +72,7 @@
   </style>
 </head>
 <body>
-  <h1>LinkedIn Bulk Actions Settings</h1>
+  <h1>FusenLink Settings</h1>
   
   <form id="settingsForm">
     <div class="form-group">
@@ -83,9 +89,90 @@
     
     <button type="submit">Save Settings</button>
   </form>
+
+  <h2>Daily Limits</h2>
+  <form id="limitsForm">
+    <div class="description" style="margin-bottom:12px">Maximum number of times each playbook can run per day. Protects your LinkedIn account from rate limiting.</div>
+    <div class="form-group">
+      <label for="limitAccept">Accept/Deny Invitations</label>
+      <input type="number" id="limitAccept" min="1" max="50" value="5">
+    </div>
+    <div class="form-group">
+      <label for="limitConnect">Bulk Connect</label>
+      <input type="number" id="limitConnect" min="1" max="20" value="3">
+    </div>
+    <div class="form-group">
+      <label for="limitExtract">Extract / Analysis</label>
+      <input type="number" id="limitExtract" min="1" max="50" value="10">
+    </div>
+    <button type="submit">Save Limits</button>
+  </form>
+
+  <h2>AI Configuration</h2>
+  <form id="aiForm">
+    <div class="form-group">
+      <label for="aiProvider">Provider</label>
+      <select id="aiProvider">
+        <option value="ollama">Ollama (local)</option>
+        <option value="vllm">vLLM</option>
+        <option value="sglang">SGLang</option>
+        <option value="openrouter">OpenRouter</option>
+        <option value="nvidia-nim">NVIDIA NIM</option>
+        <option value="openai">OpenAI</option>
+        <option value="anthropic">Anthropic</option>
+      </select>
+      <div class="description">LLM provider for AI-powered features</div>
+    </div>
+
+    <div class="form-group">
+      <label for="aiBaseUrl">Base URL</label>
+      <input type="text" id="aiBaseUrl" placeholder="http://localhost:11434/v1">
+      <div class="description">API base URL (e.g., http://localhost:11434/v1 for Ollama)</div>
+    </div>
+
+    <div class="form-group">
+      <label for="aiApiKey">API Key</label>
+      <input type="password" id="aiApiKey" placeholder="Leave empty for local providers">
+      <div class="description">API key (leave empty for Ollama/local providers)</div>
+    </div>
+
+    <div class="form-group">
+      <label for="aiModel">Model</label>
+      <input type="text" id="aiModel" placeholder="llama3.1:8b">
+      <div class="description">Model name (e.g., llama3.1:8b, gpt-4o, claude-sonnet-4-20250514)</div>
+    </div>
+
+    <button type="submit">Save AI Config</button>
+    <button type="button" id="testConnection" style="margin-left:8px;background:#137333">Test Connection</button>
+    <div id="testResult" style="margin-top:8px;font-size:0.85rem;display:none"></div>
+  </form>
+
+  <h2>Accelerator Cohort</h2>
+  <form id="cohortForm">
+    <div class="form-group">
+      <label for="cohortName">Cohort Name</label>
+      <input type="text" id="cohortName" placeholder="YC W26, Techstars NYC, etc.">
+    </div>
+    <div class="form-group">
+      <label for="cohortSyncUrl">Sync URL (optional)</label>
+      <input type="text" id="cohortSyncUrl" placeholder="https://your-accelerator.com/cohort.json">
+      <div class="description">URL to shared cohort JSON. Your accelerator provides this. Enables leaderboard, calendar, warm intros.</div>
+    </div>
+    <div class="form-group">
+      <label for="cohortMySlug">Your LinkedIn slug</label>
+      <input type="text" id="cohortMySlug" placeholder="janedoe (from linkedin.com/in/janedoe)">
+      <div class="description">Your LinkedIn profile slug so the system can identify you in the cohort.</div>
+    </div>
+    <div class="form-group">
+      <label for="cohortMembers">Cohort Members (one LinkedIn profile URL per line)</label>
+      <textarea id="cohortMembers" rows="6" style="width:100%;padding:8px;border:1px solid #ccc;border-radius:4px;font-size:0.85rem" placeholder="https://www.linkedin.com/in/cofounder1/&#10;https://www.linkedin.com/in/cofounder2/&#10;https://www.linkedin.com/in/cofounder3/"></textarea>
+      <div class="description">Add your accelerator cohort members. The Engagement Pod and Mega-Post playbooks will target these profiles.</div>
+    </div>
+    <button type="submit">Save Cohort</button>
+  </form>
   
   <div id="toast" class="toast">Settings saved!</div>
   
-  <script src="options.js"></script>
+  <script src="dist/options.bundle.js"></script>
 </body>
 </html>

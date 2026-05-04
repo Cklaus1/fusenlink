@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      width: 380px; color: #333;
+    }
+    .header { padding: 12px 16px; background: #0a66c2; color: white; display: flex; justify-content: space-between; align-items: center; }
+    .header h1 { font-size: 15px; font-weight: 700; }
+    .header-right { display: flex; gap: 8px; align-items: center; }
+    .header a { color: rgba(255,255,255,0.8); font-size: 11px; text-decoration: none; cursor: pointer; }
+    .header a:hover { color: white; }
+
+    /* Running banner */
+    .running-banner { background: #e8f0fe; padding: 8px 16px; font-size: 11px; color: #1a73e8; display: none; justify-content: space-between; align-items: center; }
+    .running-banner.active { display: flex; }
+    .stop-btn { background: #d93025; color: white; border: none; border-radius: 12px; padding: 3px 10px; font-size: 10px; font-weight: 600; cursor: pointer; }
+
+    /* AI banner */
+    .ai-banner { background: #fff3e0; padding: 8px 16px; font-size: 11px; color: #e65100; display: none; justify-content: space-between; align-items: center; }
+    .ai-banner.active { display: flex; }
+    .ai-banner a { color: #0a66c2; font-weight: 600; cursor: pointer; text-decoration: none; }
+
+    /* Tabs */
+    .tabs { display: flex; border-bottom: 1px solid #e0e0e0; background: #fafafa; }
+    .tab { flex: 1; padding: 8px 0; text-align: center; font-size: 11px; font-weight: 600; cursor: pointer; color: #666; border-bottom: 2px solid transparent; transition: all 0.15s; }
+    .tab:hover { color: #333; }
+    .tab.active { color: #0a66c2; border-bottom-color: #0a66c2; }
+
+    .tab-content { display: none; padding: 12px 16px; max-height: 420px; overflow-y: auto; }
+    .tab-content.active { display: block; }
+
+    /* Playbook list */
+    .plist { list-style: none; }
+    .pitem { display: flex; align-items: center; justify-content: space-between; padding: 8px 10px; border: 1px solid #e0e0e0; border-radius: 8px; margin-bottom: 6px; transition: background 0.15s; }
+    .pitem:hover { background: #f3f6f8; }
+    .pinfo { flex: 1; min-width: 0; }
+    .pname { font-weight: 600; font-size: 12px; }
+    .pdesc { font-size: 10px; color: #888; margin-top: 1px; }
+    .pright { display: flex; align-items: center; gap: 5px; flex-shrink: 0; }
+
+    .badge { font-size: 9px; padding: 2px 6px; border-radius: 10px; font-weight: 600; white-space: nowrap; }
+    .badge-ai { background: #e8f0fe; color: #1a73e8; }
+    .run-btn { background: #0a66c2; color: white; border: none; border-radius: 14px; padding: 4px 10px; font-size: 11px; font-weight: 600; cursor: pointer; }
+    .run-btn:hover { background: #084d93; }
+    .run-btn:disabled { background: #999; cursor: default; }
+
+    /* Status */
+    .status { font-size: 11px; color: #666; padding: 6px 16px; text-align: center; min-height: 16px; }
+    .status.error { color: #d93025; }
+    .status a { color: #0a66c2; cursor: pointer; text-decoration: underline; }
+
+    /* Schedule */
+    .sitem { display: flex; justify-content: space-between; align-items: center; padding: 8px 10px; border: 1px solid #e0e0e0; border-radius: 8px; margin-bottom: 6px; }
+    .sname { font-size: 12px; font-weight: 600; }
+    .smeta { font-size: 10px; color: #888; }
+    .sright { display: flex; align-items: center; gap: 6px; }
+    select.interval { font-size: 10px; padding: 2px 4px; border: 1px solid #ccc; border-radius: 4px; }
+    .toggle { appearance: none; width: 34px; height: 18px; background: #ccc; border-radius: 9px; position: relative; cursor: pointer; transition: background 0.2s; border: none; flex-shrink: 0; }
+    .toggle::after { content: ''; position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; background: white; border-radius: 50%; transition: transform 0.2s; }
+    .toggle.on { background: #0a66c2; }
+    .toggle.on::after { transform: translateX(16px); }
+
+    /* History */
+    .hitem { padding: 6px 0; border-bottom: 1px solid #f0f0f0; font-size: 11px; }
+    .hitem:last-child { border-bottom: none; }
+    .hname { font-weight: 600; }
+    .htime { color: #888; }
+    .hresult { margin-top: 2px; }
+    .hresult.ok { color: #137333; }
+    .hresult.stopped { color: #e65100; }
+
+    /* Pipeline funnel */
+    .funnel { display: flex; gap: 4px; margin-bottom: 10px; }
+    .funnel-stage { flex: 1; text-align: center; padding: 8px 4px; border-radius: 6px; }
+    .funnel-count { font-size: 18px; font-weight: 700; line-height: 1.2; }
+    .funnel-label { font-size: 8px; text-transform: uppercase; letter-spacing: 0.3px; opacity: 0.8; }
+    .funnel-rate { font-size: 8px; margin-top: 2px; }
+    .f-leads { background: #e8f0fe; color: #1a73e8; }
+    .f-contacted { background: #fef7e0; color: #e37400; }
+    .f-replied { background: #e6f4ea; color: #137333; }
+    .f-meeting { background: #fce8e6; color: #c5221f; }
+    .section-title { font-size: 11px; font-weight: 600; color: #555; margin: 10px 0 6px; }
+
+    /* Cohort */
+    .lb-row { display: flex; justify-content: space-between; align-items: center; padding: 5px 8px; font-size: 11px; border-radius: 4px; }
+    .lb-row:nth-child(odd) { background: #f8f8f8; }
+    .lb-rank { font-weight: 700; color: #0a66c2; width: 20px; }
+    .lb-name { flex: 1; font-weight: 500; }
+    .lb-stat { font-weight: 600; color: #333; }
+    .lb-row.you { background: #e8f0fe; }
+    .calendar-day { display: inline-block; padding: 3px 8px; margin: 2px; border-radius: 12px; font-size: 10px; }
+    .calendar-day.today { background: #0a66c2; color: white; font-weight: 600; }
+    .calendar-day.other { background: #f0f0f0; color: #666; }
+    .template-item { padding: 6px 8px; border: 1px solid #e0e0e0; border-radius: 6px; margin-bottom: 4px; font-size: 11px; cursor: pointer; }
+    .template-item:hover { background: #f3f6f8; }
+    .template-rate { float: right; color: #137333; font-weight: 600; font-size: 10px; }
+    .intro-item { padding: 6px 0; font-size: 11px; border-bottom: 1px solid #f0f0f0; }
+    .intro-name { font-weight: 600; color: #0a66c2; }
+
+    /* Data section in history */
+    .data-section { margin-top: 10px; padding-top: 10px; border-top: 1px solid #e0e0e0; }
+    .data-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
+    .data-title { font-size: 12px; font-weight: 600; color: #0a66c2; }
+    .export-btn { background: none; color: #0a66c2; border: 1px solid #0a66c2; border-radius: 12px; padding: 2px 8px; font-size: 10px; font-weight: 600; cursor: pointer; }
+    .export-btn:hover { background: #e8f0fe; }
+    .data-preview { font-size: 10px; color: #666; max-height: 120px; overflow-y: auto; white-space: pre-wrap; background: #f8f8f8; padding: 8px; border-radius: 6px; font-family: monospace; }
+
+    .empty { text-align: center; color: #999; padding: 24px 0; font-size: 12px; }
+    .link-btn { background: #0a66c2; color: white; border: none; border-radius: 14px; padding: 4px 12px; font-size: 11px; font-weight: 600; cursor: pointer; margin-top: 4px; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1>FusenLink</h1>
+    <div class="header-right">
+      <a id="settingsLink">Settings</a>
+      <span style="font-size:10px;opacity:0.6" id="version"></span>
+    </div>
+  </div>
+
+  <div class="running-banner" id="runningBanner">
+    <span id="runningText">Running...</span>
+    <button class="stop-btn" id="stopBtn">Stop</button>
+  </div>
+
+  <div class="ai-banner" id="aiBanner">
+    AI features need setup
+    <a id="setupAI">Configure</a>
+  </div>
+
+  <div class="tabs">
+    <div class="tab active" data-tab="playbooks">Playbooks</div>
+    <div class="tab" data-tab="pipeline">Pipeline</div>
+    <div class="tab" data-tab="cohort">Cohort</div>
+    <div class="tab" data-tab="schedule">Schedule</div>
+    <div class="tab" data-tab="history">History</div>
+  </div>
+
+  <div id="tab-playbooks" class="tab-content active">
+    <ul class="plist" id="playbooks"></ul>
+  </div>
+
+  <div id="tab-pipeline" class="tab-content">
+    <div id="pipelineFunnel"></div>
+    <div id="pipelineSequences"></div>
+    <div id="pipelineRecent"></div>
+  </div>
+
+  <div id="tab-cohort" class="tab-content">
+    <div id="cohortContent"></div>
+  </div>
+
+  <div id="tab-schedule" class="tab-content">
+    <div id="scheduleList"></div>
+  </div>
+
+  <div id="tab-history" class="tab-content">
+    <div id="historyList"></div>
+    <div id="dataSection"></div>
+  </div>
+
+  <div class="status" id="status"></div>
+
+  <script src="dist/popup.bundle.js"></script>
+</body>
+</html>

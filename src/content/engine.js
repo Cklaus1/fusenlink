@@ -1,0 +1,485 @@
+/**
+ * PlaybookEngine — interprets playbook JSON step sequences.
+ *
+ * The engine is a thin dispatcher: each action type is a handler function
+ * registered in the ACTION_REGISTRY. Control flow (loop, forEach, conditional)
+ * and trust level gates live here; everything else is delegated.
+ */
+
+import { evaluate, resolveValue } from './expression.js';
+import { SelectorResolver } from './selector-resolver.js';
+import * as DomOps from './dom-ops.js';
+import * as Overlay from '../ui/overlay.js';
+import { sendMessage } from '../shared/storage.js';
+import { MSG, TRUST_LEVEL, WRITE_ACTIONS } from '../shared/messages.js';
+import { showPrompt } from '../ui/ai-panel.js';
+import { ACTION_REGISTRY } from './actions/index.js';
+
+// Sentinel for breaking out of loops
+class BreakSignal {}
+
+const INTERACTIVE_SYSTEM_PROMPT = `You are an AI agent controlling a LinkedIn browser automation extension.
+You receive the current page state and must decide what actions to take next.
+
+AVAILABLE ACTIONS (use these as the "action" field):
+- extract: Read structured data. Requires "var", "selectors" (object mapping fieldName → {selector, attribute}).
+- click: Click an element. Requires "element" (CSS selector string to find it) or use "find" first.
+- find: Find an element. Requires "selector" (registry key or CSS), "var" to store result.
+- findAll: Find all matching elements. Requires "selector", "var".
+- navigate: Go to a URL. Requires "url".
+- scroll: Scroll the page. Requires "direction" ("top" or "bottom").
+- wait: Wait. Requires "ms" (milliseconds).
+- typeText: Type into input. Requires "selector", "text".
+- getPageContent: Get page text. Requires "var".
+- log: Show status message. Requires "message".
+- prompt: Ask the user a question. Requires "title", "body", "options" (array), "var".
+- done: Signal task completion.
+
+Respond with JSON:
+{
+  "reasoning": "Brief explanation of your plan",
+  "steps": [array of action objects],
+  "done": false
+}
+
+Or to finish:
+{
+  "reasoning": "Task complete because...",
+  "summary": "What was accomplished",
+  "done": true
+}
+
+RULES:
+- Maximum 5 steps per response
+- Always explain your reasoning
+- Use "prompt" to ask the user when uncertain
+- Never auto-send messages or accept connections without user confirmation
+- Prefer reading data before acting on it`;
+
+export class PlaybookEngine {
+  /**
+   * @param {Object} playbook - Playbook definition (JSON)
+   * @param {Object} selectorRegistry - Selector registry for this playbook
+   * @param {Object} [globalSettings] - User settings override
+   */
+  constructor(playbook, selectorRegistry, globalSettings = {}) {
+    this.playbook = playbook;
+    this.resolver = new SelectorResolver(selectorRegistry);
+    this.settings = { ...playbook.settings, ...globalSettings };
+    this.vars = { settings: this.settings };
+    this.stopRequested = false;
+    this.startTime = 0;
+  }
+
+  /**
+   * Run the playbook.
+   * @returns {Promise<{processedCount: number, skippedCount: number, stopped: boolean, error?: string}>}
+   */
+  async run() {
+    this.stopRequested = false;
+    this.startTime = Date.now();
+    this.vars = {
+      settings: this.settings,
+      stopRequested: false,
+      processedCount: 0,
+      skippedCount: 0,
+      totalCount: 0
+    };
+
+    // Interactive mode: AI agent drives the playbook instead of static steps
+    if (this.playbook.trustLevel === TRUST_LEVEL.INTERACTIVE) {
+      const userRequest = this.playbook.userRequest || this.playbook.description || this.playbook.name;
+      return this.runInteractive(userRequest, {
+        maxCycles: this.playbook.settings?.maxCycles || 20
+      });
+    }
+
+    Overlay.showOverlay(this.playbook.name);
+    Overlay.updateStatus('Starting...');
+    Overlay.onStop(() => this.stop());
+
+    let runError = null;
+    try {
+      await this._executeSteps(this.playbook.steps);
+    } catch (err) {
+      if (!(err instanceof BreakSignal)) {
+        console.error('PlaybookEngine error:', err);
+        Overlay.updateStatus(`Error: ${err.message}`);
+        runError = err.message;
+      }
+    }
+
+    const result = {
+      processedCount: this.vars.processedCount || 0,
+      skippedCount: this.vars.skippedCount || 0,
+      stopped: this.stopRequested,
+      ...(runError ? { error: runError } : {})
+    };
+
+    return await this._finalize(result, runError);
+  }
+
+  /**
+   * Finalize a run \u2014 emit summary overlay text and write the activity log entry.
+   * Shared between static (run) and interactive (runInteractive) execution paths
+   * so interactive sessions also appear in History.
+   * @param {Object} result
+   * @param {string|null} runError
+   * @returns {Promise<Object>} the same result object
+   */
+  async _finalize(result, runError) {
+    const summaryParts = [];
+    if (result.summary) {
+      summaryParts.push(result.summary);
+    } else if (this.stopRequested) {
+      summaryParts.push(`Cancelled \u2013 ${result.processedCount} processed`);
+    } else {
+      summaryParts.push(`Completed \u2013 ${result.processedCount} processed`);
+    }
+    if (result.skippedCount > 0) {
+      summaryParts.push(`(${result.skippedCount} skipped)`);
+    }
+    Overlay.showSummary(summaryParts.join(' '));
+
+    // Log activity
+    sendMessage({
+      action: MSG.LOG_ACTIVITY,
+      entry: {
+        playbookId: this.playbook.id,
+        action: 'playbook_run',
+        outcome: runError ? 'error' : (this.stopRequested ? 'stopped' : 'complete'),
+        processedCount: result.processedCount,
+        skippedCount: result.skippedCount,
+        durationMs: Date.now() - this.startTime,
+        ...(result.tokensUsed ? { tokensUsed: result.tokensUsed } : {}),
+        ...(result.summary ? { summary: result.summary } : {}),
+        ...(runError ? { error: runError } : {})
+      }
+    }).catch(() => {});
+
+    return result;
+  }
+
+  /**
+   * Run in interactive AI mode — agent loop where the LLM observes the page,
+   * reasons about what to do, and issues action steps dynamically.
+   * @param {string} userRequest
+   * @param {Object} [options]
+   * @param {number} [options.maxCycles=20]
+   * @returns {Promise<Object>}
+   */
+  async runInteractive(userRequest, options = {}) {
+    let snapshot;
+    try {
+      ({ snapshot } = await import('./page-observer.js'));
+    } catch (err) {
+      return { success: false, error: `Failed to load page observer: ${err.message}` };
+    }
+
+    this.stopRequested = false;
+    this.startTime = Date.now();
+    const maxCycles = options.maxCycles || 20;
+    const maxTokensBudget = this.playbook.settings?.maxTokensBudget || 100000;
+    let totalTokensUsed = 0;
+    this._lastInteractiveSummary = null;
+
+    Overlay.showOverlay('AI Interactive Mode');
+    Overlay.updateStatus('Observing page...');
+    Overlay.onStop(() => this.stop());
+
+    let previousResults = null;
+    let runError = null;
+
+    try {
+      for (let cycle = 0; cycle < maxCycles; cycle++) {
+        if (this.stopRequested) break;
+
+        const pageState = snapshot();
+
+        Overlay.updateStatus(`Thinking... (cycle ${cycle + 1}/${maxCycles})`);
+        const aiResponse = await sendMessage({
+          action: MSG.AI_REQUEST,
+          aiType: 'interactive_step',
+          input: JSON.stringify({
+            userRequest,
+            pageState,
+            previousResults,
+            cycle: cycle + 1,
+            maxCycles
+          }),
+          systemPrompt: INTERACTIVE_SYSTEM_PROMPT
+        });
+
+        // Track token usage and enforce budget
+        const used = (aiResponse?.usage?.prompt_tokens || 0) + (aiResponse?.usage?.completion_tokens || 0);
+        totalTokensUsed += used;
+        Overlay.updateStatus(`Tokens: ${totalTokensUsed}/${maxTokensBudget} (cycle ${cycle + 1}/${maxCycles})`);
+        if (totalTokensUsed > maxTokensBudget) {
+          Overlay.updateStatus(`Token budget exceeded (${totalTokensUsed}/${maxTokensBudget}) — stopping`);
+          break;
+        }
+
+        let plan = aiResponse?.parsed;
+        if (!plan) {
+          // Single retry with a stricter system prompt before giving up.
+          Overlay.updateStatus('Retrying with stricter prompt...');
+          const retry = await sendMessage({
+            action: MSG.AI_REQUEST,
+            aiType: 'interactive_step',
+            input: JSON.stringify({ userRequest, pageState, previousResults, cycle: cycle + 1, maxCycles }),
+            systemPrompt: INTERACTIVE_SYSTEM_PROMPT + '\n\nIMPORTANT: respond with JSON only, no surrounding text or markdown.'
+          });
+          const retryUsed = (retry?.usage?.prompt_tokens || 0) + (retry?.usage?.completion_tokens || 0);
+          totalTokensUsed += retryUsed;
+          plan = retry?.parsed;
+        }
+        if (!plan) {
+          Overlay.updateStatus('AI returned no actionable plan');
+          break;
+        }
+
+        if (plan.done || plan.action === 'done') {
+          Overlay.updateStatus(plan.summary || 'Task complete');
+          this._lastInteractiveSummary = plan.summary || null;
+          break;
+        }
+
+        const steps = plan.steps || (plan.action ? [plan] : []);
+        if (steps.length === 0) break;
+
+        Overlay.updateStatus(plan.reasoning || 'Executing...');
+
+        let stepError = null;
+        let executedCount = 0;
+        for (const step of steps) {
+          if (this.stopRequested) break;
+          try {
+            await this._executeStep(step);
+            executedCount++;
+          } catch (err) {
+            stepError = err.message;
+            break;
+          }
+        }
+
+        previousResults = {
+          executedSteps: executedCount,
+          vars: this._sanitizeVarsForAI(),
+          ...(stepError ? { error: stepError } : {})
+        };
+
+        await DomOps.delay(500);
+      }
+    } catch (err) {
+      console.error('Interactive mode error:', err);
+      Overlay.updateStatus(`Error: ${err.message}`);
+      runError = err.message;
+    }
+
+    const result = {
+      processedCount: this.vars.processedCount || 0,
+      skippedCount: this.vars.skippedCount || 0,
+      stopped: this.stopRequested,
+      tokensUsed: totalTokensUsed,
+      ...(this._lastInteractiveSummary ? { summary: this._lastInteractiveSummary } : {}),
+      ...(runError ? { error: runError } : {})
+    };
+
+    return await this._finalize(result, runError);
+  }
+
+  /** Request the engine to stop. */
+  stop() {
+    this.stopRequested = true;
+    this.vars.stopRequested = true;
+    Overlay.updateStatus('Stopping at next opportunity...');
+  }
+
+  /** @returns {boolean} */
+  isStopRequested() {
+    return this.stopRequested;
+  }
+
+  /** @returns {number} */
+  getElapsedSeconds() {
+    return (Date.now() - this.startTime) / 1000;
+  }
+
+  /**
+   * Execute an array of steps sequentially.
+   * @param {Object[]} steps
+   */
+  async _executeSteps(steps) {
+    if (!steps) return;
+    for (const step of steps) {
+      if (this.stopRequested) return;
+      await this._executeStep(step);
+    }
+  }
+
+  /**
+   * Execute a single step — dispatches to action registry or handles control flow.
+   * @param {Object} step
+   */
+  async _executeStep(step) {
+    // Control flow — handled directly by the engine (no trust gate needed)
+    switch (step.action) {
+      case 'loop':
+        return this._executeLoop(step);
+      case 'forEach':
+        return this._executeForEach(step);
+      case 'conditional':
+        return this._executeConditional(step);
+      case 'break':
+        throw new BreakSignal();
+    }
+
+    // All other actions — dispatch to registry
+    const handler = ACTION_REGISTRY[step.action];
+    if (!handler) {
+      console.warn(`PlaybookEngine: unknown action "${step.action}"`);
+      return;
+    }
+
+    // Validate required fields per action type
+    const missing = this._checkRequiredFields(step);
+    if (missing) {
+      console.warn(`PlaybookEngine: action "${step.action}" missing required field "${missing}"`);
+      return;
+    }
+
+    // Trust level gate — only prompt for valid write actions
+    const trustLevel = this.playbook.trustLevel || TRUST_LEVEL.AUTO;
+    if (trustLevel === TRUST_LEVEL.REVIEW && WRITE_ACTIONS.includes(step.action)) {
+      const description = step._description || `Execute "${step.action}" action?`;
+      const result = await showPrompt({
+        title: 'Confirm Action',
+        body: description,
+        options: ['Proceed', 'Skip']
+      });
+      if (result !== 'Proceed') return;
+    }
+
+    await handler(step, this, Overlay);
+  }
+
+  /**
+   * Check that required fields are present for an action step.
+   * @param {Object} step
+   * @returns {string|null} Name of missing field, or null if valid
+   */
+  _checkRequiredFields(step) {
+    const REQUIRED = {
+      find: ['selector', 'var'],
+      findAll: ['selector', 'var'],
+      click: ['element'],
+      wait: ['ms'],
+      scroll: ['direction'],
+      typeText: ['selector', 'text'],
+      extract: ['var'],
+      navigate: ['url'],
+      countElements: ['selector', 'var'],
+      waitForElement: ['selector'],
+      waitForNew: ['selector'],
+      prompt: ['title', 'body', 'options', 'var'],
+      log: ['message'],
+      getPageContent: ['var']
+    };
+    const required = REQUIRED[step.action];
+    if (!required) return null;
+    for (const field of required) {
+      if (step[field] === undefined || step[field] === null) return field;
+    }
+    return null;
+  }
+
+  /**
+   * Extract an attribute value from a DOM element.
+   * @param {HTMLElement} el
+   * @param {string} attribute
+   * @returns {string|null}
+   */
+  _extractAttribute(el, attribute) {
+    if (!el) return null;
+    if (attribute === 'textContent') return el.textContent.trim();
+    if (attribute === 'innerText') return (el.innerText || el.textContent || '').trim();
+    return el.getAttribute(attribute);
+  }
+
+  /** Execute a loop step. */
+  async _executeLoop(step) {
+    while (!this.stopRequested) {
+      if (step.breakIf) {
+        if (evaluate(step.breakIf, this.vars)) break;
+      }
+      try {
+        await this._executeSteps(step.steps);
+      } catch (err) {
+        if (err instanceof BreakSignal) break;
+        throw err;
+      }
+    }
+  }
+
+  /** Execute a forEach step. */
+  async _executeForEach(step) {
+    const items = this._resolve(step.items);
+    if (!items || !Array.isArray(items)) return;
+
+    for (const item of items) {
+      if (this.stopRequested) break;
+      if (step.breakIf && evaluate(step.breakIf, this.vars)) break;
+
+      this.vars[step.itemVar] = item;
+
+      try {
+        await this._executeSteps(step.steps);
+      } catch (err) {
+        if (err instanceof BreakSignal) break;
+        throw err;
+      }
+    }
+  }
+
+  /** Execute a conditional step. */
+  async _executeConditional(step) {
+    const result = evaluate(step.condition, this.vars);
+    if (result) {
+      if (step.onTrue) await this._executeSteps(step.onTrue);
+    } else {
+      if (step.onFalse) await this._executeSteps(step.onFalse);
+    }
+  }
+
+  /**
+   * Resolve a $variable reference or return the literal value.
+   * @param {any} value
+   * @returns {any}
+   */
+  _resolve(value) {
+    return resolveValue(value, this.vars);
+  }
+
+  /**
+   * Create a sanitized snapshot of vars for sending to LLM.
+   * Strips DOM refs, summarizes large arrays.
+   * @returns {Object}
+   */
+  _sanitizeVarsForAI() {
+    const safe = {};
+    for (const [key, value] of Object.entries(this.vars)) {
+      if (value instanceof HTMLElement || value instanceof Node) continue;
+      if (Array.isArray(value) && value.length > 0 && value[0] instanceof HTMLElement) {
+        safe[key] = `[${value.length} DOM elements]`;
+        continue;
+      }
+      if (key === 'settings') continue;
+      if (Array.isArray(value) && value.length > 20) {
+        safe[key] = { _type: 'array', length: value.length, sample: value.slice(0, 3) };
+        continue;
+      }
+      safe[key] = value;
+    }
+    return safe;
+  }
+}

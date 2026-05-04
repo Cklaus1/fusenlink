@@ -2,15 +2,15 @@
  * Unit tests for overlay.js component
  */
 
-import { 
-  showOverlay, 
-  updateProgress, 
-  updateStatus, 
-  showSummary, 
-  hideOverlay, 
+import {
+  showOverlay,
+  updateProgress,
+  updateStatus,
+  showSummary,
+  hideOverlay,
   onStop,
   isOverlayVisible
-} from '../lib/overlay';
+} from '../src/ui/overlay';
 
 describe('Overlay Component', () => {
   beforeEach(() => {

@@ -1,0 +1,16 @@
+{
+  "name": "fusenlink-cdp",
+  "version": "0.1.0",
+  "description": "CDP shell for FusenLink — drive Chrome from the CLI without installing an extension",
+  "type": "module",
+  "bin": {
+    "fusenlink-cdp": "./bin/fusenlink-cdp.js"
+  },
+  "main": "./lib/shell.js",
+  "scripts": {
+    "start": "node bin/fusenlink-cdp.js"
+  },
+  "dependencies": {
+    "chrome-remote-interface": "^0.33.0"
+  }
+}

@@ -2,7 +2,7 @@
  * Unit tests for settings.js utility
  */
 
-import { getSettings, updateSettings } from '../lib/settings';
+import { getSettings, updateSettings } from '../src/shared/storage';
 
 describe('Settings Utility', () => {
   beforeEach(() => {

@@ -20,4 +20,12 @@ Thumbs.db
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
-EOF < /dev/null
+*.log
+
+# Test / coverage artifacts
+coverage/
+
+# Runtime caches (npm-packages mirror, media cache, etc.)
+cache/
+media_cache/
+cdp-shell/cache/

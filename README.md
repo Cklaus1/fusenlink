@@ -1,117 +1,119 @@
-# LinkedIn Bulk Actions
+# FusenLink — AI-Powered LinkedIn Automation
 
-A Chrome extension that adds bulk action capabilities to LinkedIn for:
-- Accept All invitations
-- Deny All invitations
-- Send up to N connection requests (configurable)
+A Chrome extension that automates LinkedIn networking with a dynamic playbook engine, AI integration, and CLI control.
 
 ## Features
 
-- **Bulk Accept/Deny**: One-click to process all pending invitations with auto-scrolling
-- **Bulk Connect**: Send up to a configurable number of connection requests on any search results page
-- **Progress Overlay**: Live feedback showing processed items and elapsed time
-- **Stop Control**: Cancel any ongoing bulk action
-- **Security Handling**: Automatic pause when LinkedIn security checks appear
-- **Configurable Settings**: Adjust maximum invites and delay between actions
+### Automation Playbooks
+- **Accept / Deny All** — One-click bulk processing of pending invitations
+- **Bulk Connect** — Send connection requests across search results with auto-pagination
+- **Extract Contacts** — Scrape your connections list into structured JSON/CSV data
+- **AI Profile Review** — AI analyzes your profile and suggests improvements
+- **AI Inbox Analysis** — AI classifies and prioritizes your LinkedIn messages
+- **Custom Playbooks** — Add your own workflows as JSON — no code changes needed
+
+### AI Integration (Multi-Provider)
+Supports **Ollama**, **vLLM**, **SGLang**, **OpenRouter**, **NVIDIA NIM**, **OpenAI**, and **Anthropic**. Run local models for privacy or cloud models for power.
+
+### Playbook Engine
+Workflows and selectors are **data, not code**. When LinkedIn changes their UI, update a selector registry — no extension rebuild required. The engine supports 30+ action types: DOM extraction, AI calls, approval prompts, typed input, navigation, and more.
+
+### Scheduling
+Schedule playbooks to run on a recurring basis (e.g., auto-accept invitations daily) via `chrome.alarms`.
+
+### CLI + WebSocket Bridge
+Control the extension from your terminal:
+```bash
+fusenlink playbooks                    # List available skills
+fusenlink run accept-invites           # Run a playbook
+fusenlink data contacts --format csv   # Export extracted data
+fusenlink schedule set accept-invites 1440  # Schedule daily
+fusenlink ai status                    # Check AI provider
+```
+
+### Trust Levels
+Each playbook declares a trust level:
+- **auto** — runs without interaction (bulk actions, extraction)
+- **review** — AI proposes, user approves before destructive actions
+- **interactive** — full AI agent loop with user oversight
 
 ## Installation
 
-### From Source
-
-1. Clone this repository:
+1. Clone and build:
+   ```bash
+   git clone https://github.com/Cklaus1/fusenlink.git
+   cd fusenlink
+   npm install
+   npm run build
    ```
-   git clone https://github.com/yourusername/linkedin-bulk-actions.git
+
+2. Load in Chrome:
+   - Open `chrome://extensions/`
+   - Enable "Developer mode"
+   - Click "Load unpacked" and select the project directory
+
+3. (Optional) Set up AI:
+   - Click the FusenLink icon in the toolbar
+   - Go to Settings > AI Configuration
+   - Select your provider and model
+
+4. (Optional) Set up CLI:
+   ```bash
+   cd sidecar && npm install && npm start
+   export FUSENLINK_TOKEN=<token from sidecar output>
+   node cli/bin/fusenlink.js playbooks
    ```
-
-2. Open Chrome and navigate to `chrome://extensions/`
-
-3. Enable "Developer mode" by toggling the switch in the top-right corner
-
-4. Click "Load unpacked" and select the extension directory
-
-### From Chrome Web Store
-
-*(Coming soon)*
 
 ## Usage
 
-### Bulk Accept/Deny Invitations
+Click the **FusenLink icon** in the Chrome toolbar to see all available playbooks. Each shows which LinkedIn page it runs on and whether it requires AI.
 
-1. Navigate to [LinkedIn Invitation Manager](https://www.linkedin.com/mynetwork/invitation-manager/)
-2. Use the "Accept All" or "Deny All" buttons added to the top of the page
-3. An overlay will show progress and allow cancellation
+### Quick Start
+1. Navigate to LinkedIn
+2. Click the FusenLink toolbar icon
+3. Click "Run" on any playbook
 
-### Bulk Send Connection Requests
+### AI Features
+1. Go to Settings > AI Configuration
+2. Select a provider (Ollama for local, OpenRouter for cloud)
+3. AI playbooks will appear with an "AI" badge in the popup
 
-1. Navigate to any LinkedIn search results page
-2. Use the "Invite ≤ N" button added to the filters bar
-3. The extension will auto-send connection requests up to your configured limit
+## Architecture
 
-### Configure Settings
-
-1. Right-click the extension icon and select "Options"
-2. Adjust the maximum number of invites to send
-3. Adjust the delay between actions (in milliseconds)
-4. Click "Save Settings"
+```
+Popup (toolbar launcher)
+  |
+Background Service Worker
+  ├── MessageRouter (dispatch)
+  ├── PlaybookStore (CRUD)
+  ├── AIClient (multi-provider LLM)
+  ├── DataStore (contacts, inbox, logs)
+  ├── Scheduler (chrome.alarms)
+  └── WS Bridge (CLI access)
+  |
+Content Script (linkedin.com)
+  ├── PlaybookEngine (step interpreter)
+  ├── Action Registry (28 action handlers)
+  ├── SelectorResolver (fallback chains)
+  └── Overlay UI + AI Panel
+```
 
 ## Development
 
-### Prerequisites
-
-- Node.js and npm
-
-### Setup
-
-1. Clone the repository
-2. Install dependencies:
-   ```
-   npm install
-   ```
-
-### Testing
-
-Run tests:
-```
-npm test
+```bash
+npm install          # Install dependencies
+npm run build        # Build extension bundles
+npm test             # Run 121 tests
 ```
 
-### Building
+## Security
 
-Build the extension using webpack:
-```
-npm run build
-```
-
-If npm installation fails, you can use the included build script:
-```
-./build.sh
-```
-
-Or create a package for distribution:
-```
-zip -r linkedin-bulk-actions.zip * -x "node_modules/*" "*.git*" "tests/*" "dist/*"
-```
-
-## Security Notes
-
-This extension:
 - Only runs on LinkedIn domains
-- Does not transmit any data externally
-- Respects LinkedIn's security checks by automatically pausing
-- Uses reasonable delays to avoid rate limiting
+- No external data transmission (all data stays in chrome.storage.local)
+- Sidecar requires auth token for CLI access
+- AI API keys stored locally, never transmitted except to configured provider
+- Timing-safe token comparison
 
 ## License
 
-This project is licensed under the [Creative Commons Attribution-NonCommercial 4.0 International License (CC BY-NC 4.0)](LICENSE.md).
-
-See the [LICENSE.md](LICENSE.md) file for details.
-
-## Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request.
-
-1. Fork the repository
-2. Create your feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add some amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
+[Creative Commons Attribution-NonCommercial 4.0 International (CC BY-NC 4.0)](LICENSE.md)
