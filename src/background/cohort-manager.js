@@ -25,8 +25,14 @@ let syncInProgress = false; // Guard against concurrent syncs
 /**
  * Bug 23: Normalize cohort.members so consumers always see
  * [{name, linkedin, company}]. Members may arrive as bare strings (legacy),
- * partial objects, or already-normalized objects. Entries without a linkedin
- * URL are dropped — they can't be matched against connection maps anyway.
+ * partial objects, or already-normalized objects.
+ *
+ * Bug 20: do NOT drop entries that lack a LinkedIn URL. Cohorts often
+ * include members who haven't shared their LinkedIn yet (or don't have a
+ * public profile), and dropping them here removed them from leaderboards,
+ * member counts, and content calendars — surprising behavior. Downstream
+ * consumers that genuinely require a LinkedIn URL (e.g. detectWarmIntros)
+ * filter per-iteration themselves.
  * @param {any} members
  * @returns {Array<{name:string, linkedin:string, company:string}>}
  */
@@ -40,7 +46,8 @@ function normalizeMembers(members) {
       linkedin: m.linkedin || '',
       company: m.company || ''
     };
-  }).filter(m => m.linkedin);
+  });
+  // Bug 20: no .filter — keep entries even without a LinkedIn URL.
 }
 
 /**
@@ -262,6 +269,11 @@ export async function detectWarmIntros(targetProfileUrl) {
   const matches = [];
 
   for (const member of members) {
+    // Bug 20: members without a LinkedIn URL are kept by normalizeMembers,
+    // so consumers that need a slug must filter per-iteration. Without this
+    // guard, extractSlug('') returns '' and connectionMap[''] could match
+    // unintended entries.
+    if (!member.linkedin) continue;
     const memberSlug = extractSlug(member.linkedin);
     const memberConnections = connectionMap[memberSlug] || [];
 

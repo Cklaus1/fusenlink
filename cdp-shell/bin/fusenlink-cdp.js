@@ -32,6 +32,7 @@ function parseFlags(argv) {
     if (a === '--no-persist') { flags.persist = false; continue; }
     if (a === '--tab-id') { flags.tabId = argv[++i]; continue; }
     if (a === '--list-targets') { flags.listTargets = true; continue; }
+    if (a === '--all') { flags.allTargets = true; continue; }
     positional.push(a);
   }
   return { flags, positional };
@@ -58,25 +59,32 @@ async function cmdTargets(flags) {
   const port = flags.port || 9222;
   const targets = await CDP.List({ host, port });
   const pages = targets.filter((t) => t.type === 'page' && t.webSocketDebuggerUrl);
-  const linkedin = pages.filter((t) => /https?:\/\/[^/]*linkedin\.com\//.test(t.url));
 
-  console.log(`\nLinkedIn page targets at ${host}:${port}:`);
-  if (linkedin.length === 0) {
-    console.log('  (none — open a LinkedIn tab in the debugged Chrome)');
-  } else {
-    linkedin.forEach((t, i) => {
-      console.log(`  [${i}] id=${t.id.slice(0, 8)}  ${t.url}`);
-      if (t.title) console.log(`        title: ${t.title}`);
-    });
+  // Bug 12 fix: default filter to LinkedIn-only so we don't leak the user's
+  // unrelated/private/incognito tabs to the terminal. Require --all to opt
+  // in to full enumeration.
+  const filtered = flags.allTargets
+    ? pages
+    : pages.filter((t) => /linkedin\.com/.test(t.url));
+
+  if (filtered.length === 0) {
+    if (flags.allTargets) {
+      console.log(`No page targets at ${host}:${port}.`);
+    } else {
+      console.log('No LinkedIn page targets found. Use --all to list all browser tabs.');
+    }
+    return;
   }
 
-  if (pages.length > linkedin.length) {
-    console.log('\nOther page targets:');
-    pages
-      .filter((t) => !linkedin.includes(t))
-      .forEach((t, i) => {
-        console.log(`  [${i}] id=${t.id.slice(0, 8)}  ${t.url}`);
-      });
+  console.log(`${filtered.length} target(s):`);
+  for (const t of filtered) {
+    const idShort = t.id.slice(0, 8);
+    const titleShort = (t.title || '').slice(0, 40).padEnd(40);
+    const urlShort = (t.url || '').slice(0, 80);
+    console.log(`  id=${idShort}  ${titleShort}  ${urlShort}`);
+  }
+  if (!flags.allTargets) {
+    console.log('(showing LinkedIn tabs only — use --all for everything)');
   }
 }
 
@@ -216,6 +224,8 @@ Options:
   --tab-id <prefix>         pick the page target whose id starts with <prefix>
                             (use 'targets' or '--list-targets' to see ids)
   --list-targets            list LinkedIn page targets and exit
+  --all                     when listing targets, include all page targets,
+                            not just LinkedIn (default: LinkedIn-only)
   --persist                 inject scripts on every new document (run/stop/status
                             default to off; attach defaults to on)
   --no-persist              disable persistent injection (only meaningful for

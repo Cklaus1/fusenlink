@@ -27,7 +27,11 @@
   // (recaptcha, ads, etc.). Polyfilling chrome.* in those frames can break their
   // own code (recaptcha did `chrome.runtime.getManifest().<field>.toUpperCase()`).
   try {
-    if (!/(^|\.)linkedin\.com$/i.test(window.location.hostname)) return;
+    // Bug 29 fix: only install the bridge on the actual LinkedIn web app
+    // (www.linkedin.com / linkedin.com). Sibling subdomains like
+    // ads.linkedin.com or talent.linkedin.com are different surfaces and
+    // should not get a polyfilled chrome.* — that can break their own code.
+    if (!/^(www\.)?linkedin\.com$/i.test(window.location.hostname)) return;
     // Same-origin LinkedIn iframes (post embeds, Lite views, etc.) shouldn't
     // get the bridge — only the top-level frame should host the engine.
     if (window.top !== window) return;

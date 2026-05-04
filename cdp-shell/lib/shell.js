@@ -22,6 +22,10 @@ const PAGE_BRIDGE_PATH = path.join(__dirname, 'page-bridge.js');
 
 const DEFAULT_PORT = 9222;
 
+const RETRY_BACKOFF_MIN_MS = 2000;
+const RETRY_BACKOFF_MAX_MS = 60000;
+const MAX_REATTACH_ATTEMPTS = 30;
+
 /**
  * Pick the most appropriate target.
  *  - Explicit tab id prefix wins over everything else
@@ -82,7 +86,11 @@ async function readFile(p) {
 function buildWrappedBundle(bundle) {
   return `
     try {
-      if (!/(^|\\.)linkedin\\.com$/i.test(window.location.hostname)) {
+      // Bug 29 fix: only run on the actual LinkedIn web app hostnames
+      // (www.linkedin.com / linkedin.com). Subdomains like ads.linkedin.com,
+      // talent.linkedin.com etc. are unrelated surfaces and shouldn't host
+      // the bundle.
+      if (!/^(www\\.)?linkedin\\.com$/i.test(window.location.hostname)) {
         // not a linkedin frame — no-op
       } else if (window.top !== window) {
         // same-origin LinkedIn iframe — skip; only the top frame hosts the engine
@@ -287,9 +295,12 @@ export async function connect(opts = {}) {
     bridge: null,
     bundle: null,
     wrappedBundle: null,
+    chunkSources: [],
     client: null,
     target: null,
     reconnecting: false,
+    reattachAttempts: 0,
+    reattachBackoff: RETRY_BACKOFF_MIN_MS,
     // IDs returned by Page.addScriptToEvaluateOnNewDocument. We remove these
     // before re-registering on a reattach so the bridge + bundle don't pile up
     // (every reattach used to register another copy → 10 reattaches = bundle
@@ -304,6 +315,38 @@ export async function connect(opts = {}) {
     readFile(CONTENT_BUNDLE_PATH)
   ]);
   state.wrappedBundle = buildWrappedBundle(state.bundle);
+
+  // Bug 26 fix: pre-load all webpack split-chunk bundles. With
+  // `output.publicPath: ''`, webpack's runtime would otherwise try to fetch
+  // chunks from the page origin (404). Pre-evaluating them pushes them into
+  // webpack's registry so dynamic imports inside content.bundle.js find them
+  // already loaded. We exclude entry points for other extension surfaces
+  // (background/options/popup) and the content entry itself.
+  const distDir = path.dirname(CONTENT_BUNDLE_PATH);
+  const skipEntries = new Set([
+    'content.bundle.js',
+    'background.bundle.js',
+    'options.bundle.js',
+    'popup.bundle.js'
+  ]);
+  try {
+    const distFiles = await fs.readdir(distDir);
+    const chunkFiles = distFiles
+      .filter((f) => f.endsWith('.bundle.js') && !skipEntries.has(f))
+      .sort();
+    state.chunkSources = await Promise.all(
+      chunkFiles.map(async (name) => {
+        const source = await readFile(path.join(distDir, name));
+        return { name, wrapped: buildWrappedBundle(source) };
+      })
+    );
+    if (state.chunkSources.length) {
+      dbg(`loaded ${state.chunkSources.length} chunk bundle(s): ${state.chunkSources.map((c) => c.name).join(', ')}`);
+    }
+  } catch (err) {
+    dbg(`could not enumerate dist chunks: ${err.message}`);
+    state.chunkSources = [];
+  }
 
   const router = createRouter();
 
@@ -342,22 +385,42 @@ export async function connect(opts = {}) {
       // Remove any previously registered persistent scripts. Without this,
       // every reattach piles on another copy — after N reattaches, the bridge
       // and bundle run N+1 times on every page load.
+      // Bug 24 fix: only clear IDs that successfully removed; keep failures
+      // so we know what's still registered and can retry later.
+      const remainingIds = [];
       for (const id of state.registeredScriptIds) {
         try {
           await Page.removeScriptToEvaluateOnNewDocument({ identifier: id });
-        } catch { /* ok if already gone (e.g. fresh target) */ }
+        } catch {
+          // Removal failed — script may still be registered. Keep the id so
+          // we don't lose track of stale registrations.
+          remainingIds.push(id);
+        }
       }
-      state.registeredScriptIds = [];
+      state.registeredScriptIds = remainingIds;
 
-      dbg('addScriptToEvaluateOnNewDocument (bridge+bundle persistent)');
+      dbg('addScriptToEvaluateOnNewDocument (bridge+chunks+bundle persistent)');
       const r1 = await Page.addScriptToEvaluateOnNewDocument({ source: state.bridge });
       state.registeredScriptIds.push(r1.identifier);
+      // Pre-register all webpack chunk bundles before the entry, so dynamic
+      // imports inside content.bundle.js find them already in the registry.
+      for (const chunk of state.chunkSources) {
+        const rChunk = await Page.addScriptToEvaluateOnNewDocument({ source: chunk.wrapped });
+        state.registeredScriptIds.push(rChunk.identifier);
+      }
       const r2 = await Page.addScriptToEvaluateOnNewDocument({ source: state.wrappedBundle });
       state.registeredScriptIds.push(r2.identifier);
     }
 
     dbg('inject bridge (current document)');
     await Runtime.evaluate({ expression: state.bridge, returnByValue: false });
+    // Bug 26 fix: pre-evaluate all webpack chunks before the entry bundle so
+    // webpack's chunk-loading runtime finds them already loaded (no fetch
+    // round-trip to a 404 from publicPath:'').
+    for (const chunk of state.chunkSources) {
+      dbg(`inject chunk ${chunk.name} (current document)`);
+      await Runtime.evaluate({ expression: chunk.wrapped, returnByValue: false });
+    }
     dbg('inject bundle (current document)');
     await Runtime.evaluate({ expression: state.wrappedBundle, returnByValue: false });
 
@@ -378,26 +441,38 @@ export async function connect(opts = {}) {
   function _scheduleReattach() {
     if (!state.sessionAlive) return;
     if (state.reconnecting) return;
+    // Bug 11 fix: bound the retry count and use exponential backoff so the
+    // reattach loop doesn't fire forever when the target permanently
+    // disappears (sign-out, login page, etc.).
+    if (state.reattachAttempts >= MAX_REATTACH_ATTEMPTS) {
+      console.warn(`[shell] Reattach gave up after ${MAX_REATTACH_ATTEMPTS} attempts. Use 'attach' command to retry manually.`);
+      state.sessionAlive = false;
+      return;
+    }
     state.reconnecting = true;
-    console.log('[shell] target disconnected; reconnecting in 2s...');
+    state.reattachAttempts++;
+    const delay = state.reattachBackoff;
+    console.log(`[shell] target disconnected; reconnecting in ${Math.round(delay / 1000)}s (attempt ${state.reattachAttempts}/${MAX_REATTACH_ATTEMPTS})...`);
     setTimeout(async () => {
       try {
         await _connectOnce();
         console.log('[shell] reattached.');
+        // Success — reset bounded-retry state.
+        state.reattachAttempts = 0;
+        state.reattachBackoff = RETRY_BACKOFF_MIN_MS;
       } catch (err) {
-        console.warn('[shell] reattach failed:', err.message);
-        // Try once more after a longer pause if the session is still alive.
+        console.warn(`[shell] reattach attempt ${state.reattachAttempts} failed: ${err.message}`);
+        // Exponential backoff capped at RETRY_BACKOFF_MAX_MS.
+        state.reattachBackoff = Math.min(state.reattachBackoff * 2, RETRY_BACKOFF_MAX_MS);
         if (state.sessionAlive) {
-          setTimeout(() => {
-            state.reconnecting = false;
-            _scheduleReattach();
-          }, 5000).unref();
+          state.reconnecting = false;
+          _scheduleReattach();
           return;
         }
       } finally {
         state.reconnecting = false;
       }
-    }, 2000).unref();
+    }, delay).unref();
   }
 
   await _connectOnce();

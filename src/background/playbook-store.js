@@ -5,7 +5,7 @@
 import { STORAGE_KEYS, DEFAULT_SETTINGS } from '../shared/constants.js';
 import { DEFAULT_PLAYBOOKS } from '../defaults/playbooks.js';
 import { DEFAULT_SELECTOR_REGISTRIES } from '../defaults/selectors.js';
-import { validatePlaybook } from '../shared/playbook-validator.js';
+import { validatePlaybook, validateSelectorRegistry } from '../shared/playbook-validator.js';
 
 // Simple mutex to serialize read-modify-write storage operations.
 // Always resolves lockChain even on error so future operations aren't blocked.
@@ -94,14 +94,19 @@ export async function initializeDefaults() {
   // Bug 31: version-aware migrations on every startup. These are no-ops
   // when nothing changed; otherwise they replace stored defaults whose
   // shipped version has bumped. Bug 33: each migration appends a record
-  // to meta.migrations.
-  const playbookChanges = await migrateDefaults(invalidDefaults);
+  // to meta.migrations. Bug 6: dropped settings keys (e.g. user's tweak
+  // to a renamed key) flow through to the migration log.
+  const { changed: playbookChanges, droppedByPlaybook } = await migrateDefaults(invalidDefaults);
   const selectorChanges = await migrateSelectors();
   if (playbookChanges.length > 0 || selectorChanges.length > 0) {
-    await recordMigration({
+    const entry = {
       playbooks: playbookChanges,
       selectors: selectorChanges
-    });
+    };
+    if (droppedByPlaybook && Object.keys(droppedByPlaybook).length > 0) {
+      entry.droppedSettings = droppedByPlaybook;
+    }
+    await recordMigration(entry);
   }
 }
 
@@ -123,19 +128,27 @@ export async function initializeDefaults() {
  */
 function mergePlaybookFields(shipped, stored) {
   const mergedSettings = {};
+  const droppedSettings = {};
   // start with shipped defaults
   for (const k of Object.keys(shipped.settings || {})) {
     mergedSettings[k] = shipped.settings[k];
   }
-  // overlay user customizations (only for keys still present in shipped)
+  // overlay user customizations (only for keys still present in shipped);
+  // capture any stored keys that no longer exist in shipped so the
+  // migration log can surface them (Bug 6).
   for (const k of Object.keys(stored.settings || {})) {
     if (k in (shipped.settings || {})) {
       mergedSettings[k] = stored.settings[k];
+    } else {
+      droppedSettings[k] = stored.settings[k];
     }
   }
   return {
-    ...shipped, // steps, urlPattern, name, description, buttonLabel, selectors, version
-    settings: mergedSettings
+    merged: {
+      ...shipped, // steps, urlPattern, name, description, buttonLabel, selectors, version
+      settings: mergedSettings
+    },
+    droppedSettings
   };
 }
 
@@ -154,22 +167,36 @@ async function migrateDefaults(invalidDefaults = {}) {
   return withLock(STORAGE_KEYS.PLAYBOOKS, async () => {
     const stored = await getAllPlaybooks();
     const changed = [];
+    const droppedByPlaybook = {};
     for (const [id, shipped] of Object.entries(DEFAULT_PLAYBOOKS)) {
       if (invalidDefaults[id]) continue; // Bug 35: don't write a known-broken default
+      // Bug 30: never write a default that itself fails validation, even if
+      // CI didn't pre-flag it.
+      const { valid: shippedValid, errors: shippedErrors } = validatePlaybook(shipped);
+      if (!shippedValid) {
+        console.error(`Migration: skipping invalid default ${id}:`, shippedErrors);
+        continue;
+      }
       const existing = stored[id];
       if (!existing) {
         stored[id] = shipped;
         changed.push(`${id}:v${shipped.version || 0}`);
       } else if ((shipped.version || 0) > (existing.version || 0)) {
         // Bug 4: merge instead of overwrite, preserving user settings tweaks.
-        stored[id] = mergePlaybookFields(shipped, existing);
+        // Bug 6: capture any dropped (renamed/removed) settings keys so we
+        // can surface them in the migration log.
+        const { merged, droppedSettings } = mergePlaybookFields(shipped, existing);
+        stored[id] = merged;
         changed.push(`${id}:v${shipped.version || 0}`);
+        if (Object.keys(droppedSettings).length > 0) {
+          droppedByPlaybook[id] = droppedSettings;
+        }
       }
     }
     if (changed.length > 0) {
       await new Promise(r => chrome.storage.local.set({ [STORAGE_KEYS.PLAYBOOKS]: stored }, r));
     }
-    return changed;
+    return { changed, droppedByPlaybook };
   });
 }
 
@@ -182,6 +209,12 @@ async function migrateSelectors() {
     const stored = await new Promise(r => chrome.storage.local.get(STORAGE_KEYS.SELECTORS, x => r(x[STORAGE_KEYS.SELECTORS] || {})));
     const changed = [];
     for (const [key, shipped] of Object.entries(DEFAULT_SELECTOR_REGISTRIES)) {
+      // Bug 30: don't write a default registry that itself fails validation.
+      const { valid, errors } = validateSelectorRegistry(shipped);
+      if (!valid) {
+        console.error(`Migration: skipping invalid selector registry ${key}:`, errors);
+        continue;
+      }
       const existing = stored[key];
       if (!existing || (shipped.version || 0) > (existing.version || 0)) {
         stored[key] = shipped;

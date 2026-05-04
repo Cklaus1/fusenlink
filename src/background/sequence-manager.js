@@ -26,7 +26,18 @@ import * as AI from './ai-client.js';
 const SEQUENCE_ALARM = 'sequence-check';
 const CHECK_INTERVAL_MINUTES = 60; // Check every hour
 
-const DEFAULT_STAGGER_MINUTES = 5;
+// Bug 3: default staggerMinutes was 5, which combined with hourly
+// processSequences and a 100-contact campaign queued sends across multiple
+// days (5 * 100 = 500 minutes ≈ 8.3h, then the hourly check pushes the tail
+// further). 1 min still provides enough randomization to avoid a perfect
+// burst pattern (especially combined with delayMs jitter elsewhere) while
+// keeping a 100-contact day inside a single business-day window.
+//
+// staggerMinutes spaces out enrolled contacts so the first batch doesn't all
+// hit LinkedIn at exactly 9am. 1 min default gives 100 contacts a 100-minute
+// spread, reasonable for a single-day campaign window. processSequences
+// runs hourly, so every send cycle picks up ~60 contacts in flight.
+const DEFAULT_STAGGER_MINUTES = 1;
 const DEFAULT_QUIET_HOURS_START = 8;  // 8am local
 const DEFAULT_QUIET_HOURS_END = 20;   // 8pm local
 
@@ -61,14 +72,23 @@ function getHourInZone(date, timezone) {
 
 /**
  * Bug 3: is the given timestamp on a sendable day for the sequence?
- * If `weekdaysOnly` is true (default), Saturdays and Sundays are not sendable.
+ * If `weekdaysOnly` is true, Saturdays and Sundays are not sendable.
+ *
+ * Bug 2: use STRICT equality (`=== true`) so a sequence with no
+ * `weekdaysOnly` field (i.e. created before the field existed) is treated as
+ * weekdaysOnly:false. The `??` operator would silently flip those old
+ * sequences to weekday-only and shift Saturday sends to Monday, which would
+ * be a behavior regression for existing users. New sequences explicitly set
+ * `weekdaysOnly: true` in createSequence so the new default still applies
+ * to anything created from now on.
  * @param {number} timestampMs
  * @param {string} timezone
  * @param {Object} sequence
  * @returns {boolean}
  */
 function isSendableDay(timestampMs, timezone, sequence) {
-  if (!sequence?.settings?.weekdaysOnly) return true;
+  const weekdaysOnly = sequence?.settings?.weekdaysOnly === true;
+  if (!weekdaysOnly) return true;
   try {
     const wd = new Intl.DateTimeFormat('en-US', { timeZone: timezone, weekday: 'short' }).format(new Date(timestampMs));
     return wd !== 'Sat' && wd !== 'Sun';
@@ -76,6 +96,22 @@ function isSendableDay(timestampMs, timezone, sequence) {
     const d = new Date(timestampMs).getDay();
     return d !== 0 && d !== 6;
   }
+}
+
+/**
+ * Bug 28: quiet-hours window predicate that handles wrap-around windows.
+ * For a normal window (start <= end, e.g. 8..20), valid hours are
+ * [start, end). For a wrap-around window (start > end, e.g. 23..7), valid
+ * hours are [start, 24) ∪ [0, end) — i.e. hour >= start OR hour < end.
+ * @param {number} hour - 0..23
+ * @param {number} start
+ * @param {number} end
+ * @returns {boolean}
+ */
+function inQuietWindow(hour, start, end) {
+  if (start <= end) return hour >= start && hour < end;
+  // Wrap-around (e.g. 23..7): valid is hour >= 23 OR hour < 7.
+  return hour >= start || hour < end;
 }
 
 /**
@@ -100,8 +136,11 @@ export function nextSendableTime(timestampMs, sequence) {
   const tz = sequence?.settings?.timezone || 'UTC';
   const start = sequence?.settings?.quietHoursStart ?? DEFAULT_QUIET_HOURS_START;
   const end = sequence?.settings?.quietHoursEnd ?? DEFAULT_QUIET_HOURS_END;
+  // Bug 2: strict equality so undefined → false (preserves behavior for
+  // sequences created before the field existed).
+  const weekdaysOnly = sequence?.settings?.weekdaysOnly === true;
   // If the window is the whole day, nothing to shift (assuming weekdaysOnly is off).
-  if (start <= 0 && end >= 24 && !sequence?.settings?.weekdaysOnly) {
+  if (start <= 0 && end >= 24 && !weekdaysOnly) {
     return timestampMs;
   }
   let t = timestampMs;
@@ -117,7 +156,8 @@ export function nextSendableTime(timestampMs, sequence) {
       continue;
     }
     const hour = getHourInZone(new Date(t), tz);
-    if (hour >= start && hour < end) return t;
+    // Bug 28: support wrap-around quiet windows (e.g. 23..7 overnight).
+    if (inQuietWindow(hour, start, end)) return t;
     // Advance one hour and re-check. Cheap and DST-safe.
     t += 60 * 60 * 1000;
   }
@@ -515,6 +555,47 @@ export async function recordMessageSent(sequenceId, profileUrl, messageText) {
 
     sequence.updatedAt = new Date().toISOString();
     await saveSequences(sequences);
+  });
+}
+
+/**
+ * Bug 31: re-stagger pending contacts in a sequence after settings change.
+ *
+ * When a user updates `staggerMinutes` (or quiet-hours / timezone /
+ * weekdaysOnly) on a sequence, that change normally only affects future
+ * enrollments — the existing contacts keep the `nextMessageAt` they got
+ * when they were enrolled. This export lets callers (CLI / tests) recompute
+ * pending contacts' send times against the current settings.
+ *
+ * Only contacts that are still untouched are re-staggered:
+ *   - status === 'active'
+ *   - messages.length === 0 (no message has been sent yet)
+ * Contacts mid-sequence (already received a message) keep their schedule
+ * because their delay is anchored to lastMessageAt, not the enrollment time.
+ *
+ * The message-router file is owned by another agent, so this is intentionally
+ * not surfaced through the routing layer here. Callers invoke directly.
+ *
+ * @param {string} sequenceId
+ * @returns {Promise<{restaggered: number}|undefined>}
+ */
+export async function restagger(sequenceId) {
+  return withLock(async () => {
+    const sequences = await getSequences();
+    const sequence = sequences.items?.[sequenceId];
+    if (!sequence) return;
+    const stagger = (sequence.settings?.staggerMinutes ?? DEFAULT_STAGGER_MINUTES) * 60 * 1000;
+    const baseTime = Date.now();
+    let i = 0;
+    for (const contact of Object.values(sequence.contacts || {})) {
+      // Only restagger contacts that haven't been messaged yet.
+      if (contact.status !== 'active' || (contact.messages?.length || 0) > 0) continue;
+      contact.nextMessageAt = new Date(nextSendableTime(baseTime + (i * stagger), sequence)).toISOString();
+      i++;
+    }
+    sequence.updatedAt = new Date().toISOString();
+    await saveSequences(sequences);
+    return { restaggered: i };
   });
 }
 

@@ -912,6 +912,273 @@ describe('PlaybookEngine', () => {
       await engine.run();
       expect(engine.vars.i).toBe(2);
     });
+
+    // Bug 8: when the author has provided a breakIf, the engine should trust
+    // them and default the cap to Infinity. Previously the implicit 10000 cap
+    // (and a former 10000 typo) silently truncated long-running playbooks.
+    test('breakIf without explicit safetyCap defaults cap to Infinity', async () => {
+      const playbook = makePlaybook([
+        { action: 'setVar', var: 'i', value: 0 },
+        {
+          action: 'loop',
+          breakIf: '$i >= 12000',
+          steps: [{ action: 'incrementVar', var: 'i' }]
+        }
+      ]);
+      const engine = new PlaybookEngine(playbook, emptyRegistry);
+      await engine.run();
+      // Would be capped at 10000 with the old default — now reaches 12000.
+      expect(engine.vars.i).toBe(12000);
+    });
+
+    test('no breakIf and no explicit cap falls back to 10000 safety net', async () => {
+      const playbook = makePlaybook([
+        { action: 'setVar', var: 'i', value: 0 },
+        // No breakIf provided. Validator would normally reject this; the
+        // engine still applies a hard fallback cap so a buggy playbook can't
+        // hang the page indefinitely.
+        {
+          action: 'loop',
+          steps: [{ action: 'incrementVar', var: 'i' }]
+        }
+      ]);
+      const engine = new PlaybookEngine(playbook, emptyRegistry);
+      const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        await engine.run();
+        expect(engine.vars.i).toBe(10000);
+      } finally {
+        warnSpy.mockRestore();
+      }
+    });
+  });
+
+  // Bug 27: a hot loop hitting a safetyCap previously logged a warning every
+  // single iteration once it was past the cap. We now log once per playbookId
+  // per run.
+  describe('safetyCap warn dedup (Bug 27)', () => {
+    test('warns at most once per playbookId per run', async () => {
+      const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        const playbook = makePlaybook([
+          { action: 'setVar', var: 'i', value: 0 },
+          {
+            action: 'loop',
+            safetyCap: 3,
+            steps: [{ action: 'incrementVar', var: 'i' }]
+          },
+          // Second loop with the same playbookId hitting the cap again
+          { action: 'setVar', var: 'j', value: 0 },
+          {
+            action: 'loop',
+            safetyCap: 3,
+            steps: [{ action: 'incrementVar', var: 'j' }]
+          }
+        ]);
+        const engine = new PlaybookEngine(playbook, emptyRegistry);
+        await engine.run();
+
+        const safetyWarns = warnSpy.mock.calls.filter(
+          args => typeof args[0] === 'string' && args[0].includes('safetyCap')
+        );
+        // Only one warning despite two loops hitting the cap.
+        expect(safetyWarns.length).toBe(1);
+      } finally {
+        warnSpy.mockRestore();
+      }
+    });
+  });
+
+  // Bug 4 / Bug 21: every activity-log entry from a single run shares a
+  // stable runId so the popup can dedupe checkpoints when summing daily counts.
+  describe('runId on activity log entries (Bug 4 / Bug 21)', () => {
+    test('final activity log entry includes a runId', async () => {
+      const calls = [];
+      chrome.runtime.sendMessage.mockImplementation((message, callback) => {
+        calls.push(message);
+        callback({ success: true });
+      });
+
+      const playbook = makePlaybook([
+        { action: 'setVar', var: 'processedCount', value: 1 }
+      ]);
+      const engine = new PlaybookEngine(playbook, emptyRegistry);
+      await engine.run();
+
+      const finalEntry = calls.find(
+        c => c.action === 'logActivity' && c.entry?.action === 'playbook_run'
+      );
+      expect(finalEntry).toBeDefined();
+      expect(typeof finalEntry.entry.runId).toBe('string');
+      expect(finalEntry.entry.runId.length).toBeGreaterThan(0);
+    });
+
+    test('checkpoints share the same runId as the final entry', async () => {
+      const calls = [];
+      chrome.runtime.sendMessage.mockImplementation((message, callback) => {
+        calls.push(message);
+        callback({ success: true });
+      });
+
+      const playbook = makePlaybook([
+        { action: 'setVar', var: 'i', value: 0 },
+        {
+          action: 'loop',
+          breakIf: '$i >= 22',
+          steps: [{ action: 'incrementVar', var: 'i' }]
+        }
+      ]);
+      const engine = new PlaybookEngine(playbook, emptyRegistry);
+      await engine.run();
+
+      const checkpoints = calls.filter(
+        c => c.action === 'logActivity' && c.entry?.action === 'playbook_checkpoint'
+      );
+      const finalEntry = calls.find(
+        c => c.action === 'logActivity' && c.entry?.action === 'playbook_run'
+      );
+
+      expect(checkpoints.length).toBeGreaterThanOrEqual(2);
+      expect(finalEntry).toBeDefined();
+      const sharedId = finalEntry.entry.runId;
+      expect(typeof sharedId).toBe('string');
+      for (const cp of checkpoints) {
+        expect(cp.entry.runId).toBe(sharedId);
+      }
+    });
+
+    test('two consecutive runs produce different runIds', async () => {
+      const calls = [];
+      chrome.runtime.sendMessage.mockImplementation((message, callback) => {
+        calls.push(message);
+        callback({ success: true });
+      });
+
+      const playbook = makePlaybook([
+        { action: 'setVar', var: 'x', value: 1 }
+      ]);
+      const engine1 = new PlaybookEngine(playbook, emptyRegistry);
+      await engine1.run();
+      const engine2 = new PlaybookEngine(playbook, emptyRegistry);
+      await engine2.run();
+
+      const finals = calls.filter(
+        c => c.action === 'logActivity' && c.entry?.action === 'playbook_run'
+      );
+      expect(finals.length).toBe(2);
+      expect(finals[0].entry.runId).not.toBe(finals[1].entry.runId);
+    });
+  });
+
+  // Bug 22: runInteractive surfaces a per-cycle token-usage history on the
+  // activity log entry so the popup can render a budget timeline.
+  describe('runInteractive cycleHistory (Bug 22)', () => {
+    let originalSendMessage;
+    beforeEach(() => {
+      originalSendMessage = chrome.runtime.sendMessage.getMockImplementation();
+    });
+    afterEach(() => {
+      chrome.runtime.sendMessage.mockImplementation(originalSendMessage);
+    });
+
+    test('activity log entry includes cycleHistory with per-cycle tokensUsed', async () => {
+      const calls = [];
+      let cycle = 0;
+      chrome.runtime.sendMessage.mockImplementation((message, callback) => {
+        calls.push(message);
+        if (message.action === 'aiRequest') {
+          cycle++;
+          if (cycle >= 3) {
+            callback({
+              parsed: { done: true, summary: 'wrap' },
+              usage: { prompt_tokens: 5, completion_tokens: 5 }
+            });
+          } else {
+            callback({
+              parsed: {
+                reasoning: `cycle ${cycle} reasoning`,
+                steps: [{ action: 'log', message: 'tick' }],
+                done: false
+              },
+              usage: { prompt_tokens: 100 * cycle, completion_tokens: 0 }
+            });
+          }
+        } else {
+          callback({ success: true });
+        }
+      });
+
+      const playbook = {
+        id: 'cycle-history',
+        version: 1,
+        name: 'Cycle History',
+        trustLevel: 'interactive',
+        userRequest: 'check cycle history',
+        steps: [],
+        settings: { delayMs: 1, maxCycles: 5, maxTokensBudget: 100000 }
+      };
+      const engine = new PlaybookEngine(playbook, emptyRegistry);
+      const result = await engine.run();
+
+      expect(Array.isArray(result.cycleHistory)).toBe(true);
+      expect(result.cycleHistory.length).toBeGreaterThanOrEqual(3);
+      expect(result.cycleHistory[0]).toEqual(expect.objectContaining({
+        cycle: 1,
+        tokensUsed: 100
+      }));
+      expect(result.cycleHistory[1]).toEqual(expect.objectContaining({
+        cycle: 2,
+        tokensUsed: 200
+      }));
+
+      const finalEntry = calls.find(
+        c => c.action === 'logActivity' && c.entry?.action === 'playbook_run'
+      );
+      expect(finalEntry).toBeDefined();
+      expect(Array.isArray(finalEntry.entry.cycleHistory)).toBe(true);
+      expect(finalEntry.entry.cycleHistory.length).toBeGreaterThanOrEqual(3);
+    });
+
+    test('cycleHistory is capped at the last 20 entries', async () => {
+      // Drive >20 cycles via budget exhaustion. The engine pushes a
+      // cycleHistory entry per cycle BEFORE the budget check, so we let
+      // it accumulate >20 entries, then breakIf budget exit. Result-shaping
+      // caps cycleHistory at the last 20.
+      let callCount = 0;
+      chrome.runtime.sendMessage.mockImplementation((message, callback) => {
+        if (message.action === 'aiRequest') {
+          callCount++;
+          callback({
+            parsed: {
+              reasoning: `cycle ${callCount}`,
+              steps: [{ action: 'log', message: 'tick' }],
+              done: false
+            },
+            // Each cycle costs 5000 tokens. With 100k budget, cycle 21
+            // pushes total to 105k and trips the budget exit AFTER the
+            // cycleHistory.push for that cycle, giving us 21 entries.
+            usage: { prompt_tokens: 5000, completion_tokens: 0 }
+          });
+        } else {
+          callback({ success: true });
+        }
+      });
+
+      const playbook = {
+        id: 'cycle-cap',
+        version: 1,
+        name: 'Cycle Cap',
+        trustLevel: 'interactive',
+        userRequest: 'spin',
+        steps: [],
+        settings: { delayMs: 1, maxCycles: 50, maxTokensBudget: 100000 }
+      };
+      const engine = new PlaybookEngine(playbook, emptyRegistry);
+      const result = await engine.run();
+      expect(callCount).toBeGreaterThan(20);
+      expect(result.cycleHistory).toBeDefined();
+      expect(result.cycleHistory.length).toBe(20);
+    }, 30000);
   });
 
   describe('runInteractive summary fallback (Bug 16)', () => {
@@ -1072,6 +1339,26 @@ describe('PlaybookEngine', () => {
 
     test('falls back to unknown for unrecognized messages', () => {
       expect(classifyError('something weird happened')).toBe('unknown');
+    });
+
+    // Bug 9: classifyError previously missed common transient patterns
+    // (DNS, ETIMEDOUT, socket resets) and tagged them "unknown".
+    test('classifies expanded transient patterns', () => {
+      expect(classifyError('ETIMEDOUT')).toBe('transient');
+      expect(classifyError('connect EAI_AGAIN api.example.com')).toBe('transient');
+      expect(classifyError('socket hang up')).toBe('transient');
+      expect(classifyError('EHOSTUNREACH 1.2.3.4:443')).toBe('transient');
+      expect(classifyError('ENETUNREACH')).toBe('transient');
+      expect(classifyError('connection reset by peer')).toBe('transient');
+      expect(classifyError('dns lookup failed')).toBe('transient');
+    });
+
+    test('classifies "unauthorized" wording as auth', () => {
+      expect(classifyError('Request unauthorized')).toBe('auth');
+    });
+
+    test('classifies quota errors as rate_limit', () => {
+      expect(classifyError('Quota exceeded for project')).toBe('rate_limit');
     });
 
     test('previousResults includes errorClass when a step throws mid-cycle', async () => {

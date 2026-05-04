@@ -340,6 +340,52 @@ describe('Bug 32 — extractProviderErrorMessage', () => {
   });
 });
 
+// Bug 17: Anthropic non-200 path uses extractProviderErrorMessage
+describe('Bug 17 — Anthropic non-200 error message extraction', () => {
+  beforeEach(async () => {
+    await saveConfig({
+      provider: 'anthropic',
+      baseUrl: 'https://api.anthropic.com/v1',
+      apiKey: 'sk-ant-test',
+      model: 'claude-3-haiku-20240307',
+      maxTokens: 512
+    });
+  });
+
+  test('401 with JSON body surfaces meaningful error message via extractProviderErrorMessage', async () => {
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: false,
+      status: 401,
+      text: async () => JSON.stringify({
+        type: 'error',
+        error: { type: 'authentication_error', message: 'Invalid API key' }
+      })
+    });
+
+    const result = await chat({ userMessage: 'hello' });
+
+    expect(result.content).toBe('');
+    expect(result.error).toBe('Anthropic API error 401: Invalid API key');
+    expect(result.usage).toBeDefined();
+    expect(result.usage.estimated).toBe(true);
+  });
+
+  test('401 with garbage (non-JSON) body falls back to bare status code', async () => {
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: false,
+      status: 401,
+      text: async () => 'not json at all'
+    });
+
+    const result = await chat({ userMessage: 'hello' });
+
+    expect(result.content).toBe('');
+    expect(result.error).toBe('Anthropic API error 401');
+    expect(result.usage).toBeDefined();
+    expect(result.usage.estimated).toBe(true);
+  });
+});
+
 // Bug 24: error-path estimate uses body.max_tokens (pessimistic)
 describe('Bug 24 — pessimistic completion estimate on error', () => {
   test('completion_tokens estimate equals body max_tokens when request fails', async () => {

@@ -17,17 +17,43 @@ const os = require('os');
 const path = require('path');
 
 const PORT = process.env.FUSENLINK_PORT || 9333;
-// Auth token — generated on startup, persisted to ~/.fusenlink/sidecar.token (mode 600).
-// If FUSENLINK_TOKEN is already set in the environment, use it as-is (no persistence).
-const AUTH_TOKEN = process.env.FUSENLINK_TOKEN || crypto.randomBytes(16).toString('hex');
 
-function persistAuthToken(token) {
-  const dir = path.join(os.homedir(), '.fusenlink');
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-  const file = path.join(dir, 'sidecar.token');
-  fs.writeFileSync(file, token, { mode: 0o600 });
-  return file;
+// Auth token — Bug 7 fix: reuse existing token from ~/.fusenlink/sidecar.token so
+// CLI sessions survive sidecar restarts. Generate a new token only when:
+//   (a) the file doesn't exist (first run), or
+//   (b) --rotate-token flag is passed, or
+//   (c) FUSENLINK_TOKEN env var is explicitly set (use that value, skip file).
+const TOKEN_FILE = path.join(os.homedir(), '.fusenlink', 'sidecar.token');
+const ROTATE = process.argv.includes('--rotate-token');
+
+function loadOrGenerateToken() {
+  if (process.env.FUSENLINK_TOKEN) {
+    console.log('  Auth token: provided via FUSENLINK_TOKEN env var.');
+    return process.env.FUSENLINK_TOKEN;
+  }
+  if (!ROTATE && fs.existsSync(TOKEN_FILE)) {
+    try {
+      const t = fs.readFileSync(TOKEN_FILE, 'utf8').trim();
+      if (/^[a-f0-9]{32,}$/i.test(t)) {
+        console.log(`  Auth token: reusing existing from ${TOKEN_FILE}`);
+        return t;
+      }
+    } catch {}
+  }
+  // Generate new token and persist it
+  const t = crypto.randomBytes(16).toString('hex');
+  try {
+    const dir = path.dirname(TOKEN_FILE);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+    fs.writeFileSync(TOKEN_FILE, t, { mode: 0o600 });
+    console.log(`  Auth token: generated new, saved to ${TOKEN_FILE}`);
+  } catch (err) {
+    console.warn(`  Auth token: failed to persist (${err.message}); only available in memory`);
+  }
+  return t;
 }
+
+const AUTH_TOKEN = loadOrGenerateToken();
 
 // Track the connected extension client
 let extensionSocket = null;
@@ -73,16 +99,40 @@ wss.on('connection', (ws) => {
 
 // --- HTTP API handling ---
 
-const ALLOWED_HOSTS = new Set([
-  `localhost:${PORT}`,
-  `127.0.0.1:${PORT}`,
-  `[::1]:${PORT}`
-]);
+// Bug 23 fix: parse Host header and compare hostname only so that
+// `Host: localhost` (no port) is accepted alongside `Host: localhost:9333`.
+function isAllowedHost(hostHeader, expectedPort) {
+  if (!hostHeader) return false;
+  const lower = hostHeader.toLowerCase();
+  // Determine hostname and optional port
+  const isIPv6 = lower.startsWith('[');
+  let hostname, port;
+  if (isIPv6) {
+    const closeBracket = lower.indexOf(']');
+    hostname = lower.slice(0, closeBracket + 1);
+    port = lower.slice(closeBracket + 2) || null;
+  } else {
+    const colonIdx = lower.lastIndexOf(':');
+    if (colonIdx > 0) {
+      hostname = lower.slice(0, colonIdx);
+      port = lower.slice(colonIdx + 1);
+    } else {
+      hostname = lower;
+      port = null;
+    }
+  }
+  // Hostname must be one of the localhost forms
+  const allowedHostnames = new Set(['localhost', '127.0.0.1', '[::1]']);
+  if (!allowedHostnames.has(hostname)) return false;
+  // Port must be absent or match expected port
+  if (port && parseInt(port, 10) !== parseInt(expectedPort, 10)) return false;
+  return true;
+}
 
 async function handleHttp(req, res) {
   // DNS-rebinding protection — only accept connections with a localhost Host header
-  const host = (req.headers.host || '').toLowerCase();
-  if (!ALLOWED_HOSTS.has(host)) {
+  const host = req.headers.host || '';
+  if (!isAllowedHost(host, PORT)) {
     return jsonResponse(res, { error: 'Invalid Host header. Sidecar accepts only localhost connections.' }, 421);
   }
 
@@ -273,12 +323,6 @@ server.listen(PORT, () => {
   console.log(`[fusenlink-sidecar] HTTP + WS server on port ${PORT}`);
   console.log(`  HTTP API: http://localhost:${PORT}/api/`);
   console.log(`  WS endpoint: ws://localhost:${PORT}/ws`);
-  if (!process.env.FUSENLINK_TOKEN) {
-    const tokenFile = persistAuthToken(AUTH_TOKEN);
-    console.log(`  Auth token saved to: ${tokenFile} (mode 600)`);
-    console.log(`  Or set FUSENLINK_TOKEN env var to override.`);
-  } else {
-    console.log(`  Auth token: provided via FUSENLINK_TOKEN env var.`);
-  }
+  // Token status was already logged by loadOrGenerateToken() above.
   console.log(`  Waiting for extension to connect...`);
 });

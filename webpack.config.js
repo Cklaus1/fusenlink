@@ -12,12 +12,13 @@ module.exports = {
     filename: '[name].bundle.js',
     path: path.resolve(__dirname, 'dist'),
     clean: true,
-    // Disable webpack's auto-publicPath detection (which reads
-    // document.currentScript.src at runtime). With '' the chunk URL becomes a
-    // bare filename, which is fine in the extension context (chunks are
-    // web_accessible_resources). Removes the need for the document.currentScript
-    // shim in the CDP shell. (Shim is kept in shell.js as defense-in-depth for
-    // older bundles.)
+    // Bug 26: publicPath '' disables webpack's auto-publicPath detection (which
+    // reads document.currentScript.src at runtime). With '' the chunk URL becomes
+    // a bare filename, which works in the extension context (chunks are listed in
+    // web_accessible_resources). Dynamic imports (only used by engine.runInteractive)
+    // require all chunks to be pre-injected by the host environment — the CDP shell
+    // does this; the extension currently does not exercise interactive mode.
+    // Do NOT change this value without coordinating with the CDP shell agent.
     publicPath: ''
   }
 };

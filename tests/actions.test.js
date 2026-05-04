@@ -237,6 +237,124 @@ describe('aiCall error propagation (Bug 35)', () => {
     expect(engine.vars.out).toEqual({ error: 'rate limited' });
     expect(engine.vars.after).toBe('reached');
   });
+
+  // Bug 1: a single AI hiccup in a forEach used to abort the entire bulk run.
+  // Default behavior is now "throw outside loops, swallow inside loops".
+  test('aiCall in forEach swallows error by default and continues iterating', async () => {
+    let aiCalls = 0;
+    chrome.runtime.sendMessage.mockImplementation((message, callback) => {
+      if (message.action === 'aiRequest') {
+        aiCalls++;
+        callback({ error: 'transient blip' });
+      } else {
+        callback({ success: true });
+      }
+    });
+
+    const playbook = makePlaybook([
+      { action: 'setVar', var: 'items', value: [1, 2, 3, 4, 5] },
+      { action: 'setVar', var: 'count', value: 0 },
+      {
+        action: 'forEach',
+        items: '$items',
+        itemVar: 'item',
+        steps: [
+          { action: 'aiCall', aiType: 'rewrite', input: 'x', var: 'out' },
+          { action: 'incrementVar', var: 'count' }
+        ]
+      }
+    ]);
+
+    const engine = new PlaybookEngine(playbook, emptyRegistry);
+    const result = await engine.run();
+
+    // No top-level error — loop did not abort.
+    expect(result.error).toBeUndefined();
+    // aiCall fired for every item.
+    expect(aiCalls).toBe(5);
+    // And every iteration ran the increment after the swallowed error.
+    expect(engine.vars.count).toBe(5);
+    // Per-iteration var still set to {error: ...}
+    expect(engine.vars.out).toEqual({ error: 'transient blip' });
+  });
+
+  test('aiCall in loop swallows error by default and continues', async () => {
+    chrome.runtime.sendMessage.mockImplementation((message, callback) => {
+      if (message.action === 'aiRequest') {
+        callback({ error: 'ECONNREFUSED' });
+      } else {
+        callback({ success: true });
+      }
+    });
+
+    const playbook = makePlaybook([
+      { action: 'setVar', var: 'i', value: 0 },
+      {
+        action: 'loop',
+        breakIf: '$i >= 3',
+        steps: [
+          { action: 'aiCall', aiType: 'rewrite', input: 'x', var: 'out' },
+          { action: 'incrementVar', var: 'i' }
+        ]
+      }
+    ]);
+    const engine = new PlaybookEngine(playbook, emptyRegistry);
+    const result = await engine.run();
+
+    expect(result.error).toBeUndefined();
+    expect(engine.vars.i).toBe(3);
+  });
+
+  test('aiCall in forEach with explicit breakOnError:true throws and aborts', async () => {
+    chrome.runtime.sendMessage.mockImplementation((message, callback) => {
+      if (message.action === 'aiRequest') {
+        callback({ error: 'auth failed' });
+      } else {
+        callback({ success: true });
+      }
+    });
+
+    const playbook = makePlaybook([
+      { action: 'setVar', var: 'items', value: [1, 2, 3] },
+      { action: 'setVar', var: 'count', value: 0 },
+      {
+        action: 'forEach',
+        items: '$items',
+        itemVar: 'item',
+        steps: [
+          { action: 'aiCall', aiType: 'rewrite', input: 'x', var: 'out', breakOnError: true },
+          { action: 'incrementVar', var: 'count' }
+        ]
+      }
+    ]);
+    const engine = new PlaybookEngine(playbook, emptyRegistry);
+    const result = await engine.run();
+
+    // The throw is caught at the engine level, recorded as runError.
+    expect(result.error).toContain('aiCall failed');
+    // Forward progress halted on the first item.
+    expect(engine.vars.count).toBe(0);
+  });
+
+  test('aiCall outside loops throws by default (regression check)', async () => {
+    chrome.runtime.sendMessage.mockImplementation((message, callback) => {
+      if (message.action === 'aiRequest') {
+        callback({ error: 'ETIMEDOUT' });
+      } else {
+        callback({ success: true });
+      }
+    });
+
+    const playbook = makePlaybook([
+      { action: 'aiCall', aiType: 'rewrite', input: 'hi', var: 'out' },
+      { action: 'setVar', var: 'after', value: 'never' }
+    ]);
+    const engine = new PlaybookEngine(playbook, emptyRegistry);
+    const result = await engine.run();
+
+    expect(result.error).toContain('aiCall failed');
+    expect(engine.vars.after).toBeUndefined();
+  });
 });
 
 describe('AppendArray action', () => {

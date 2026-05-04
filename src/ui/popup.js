@@ -101,11 +101,22 @@ chrome.runtime.sendMessage({ action: 'getDailyLimits' }, (result) => {
 });
 
 // Bug 8: reflect CLI-driven dailyLimits changes in open popup
-chrome.storage.onChanged.addListener((changes, area) => {
-  if (area === 'local' && changes.dailyLimits) {
+// Bug 13: bust pipeline cache when activity log / sequences / contacts change
+// Bug 25: capture listener reference so it can be removed on beforeunload
+const storageHandler = (changes, area) => {
+  if (area !== 'local') return;
+  if (changes.dailyLimits) {
     dailyLimits = { ...DEFAULT_DAILY_LIMITS, ...changes.dailyLimits.newValue };
     loadPlaybooks(); // re-render to update limit labels
   }
+  if (changes['data.activityLog'] || changes['data.sequences'] || changes['data.contacts']) {
+    pipelineCache = null;
+    pipelineCacheAt = 0;
+  }
+};
+chrome.storage.onChanged.addListener(storageHandler);
+window.addEventListener('beforeunload', () => {
+  chrome.storage.onChanged.removeListener(storageHandler);
 });
 
 // Bug 5: quota banner
@@ -178,11 +189,28 @@ function loadPlaybooks() {
       action: 'getData', collection: 'activityLog', options: { limit: 0 }
     }, (logData) => {
       const todayCounts = {};
-      // Bug 2: sum processedCount across all outcomes (not just 'complete') to prevent stop-and-retry bypass
-      for (const e of (logData?.entries || [])) {
-        if (isToday(e.timestamp)) {
-          todayCounts[e.playbookId] = (todayCounts[e.playbookId] || 0) + (e.processedCount || 0);
+      // Bug 4: skip checkpoint rows (in_progress), dedupe by runId keeping highest processedCount
+      const entries = logData?.entries || [];
+      // Group by playbookId → runId → highest processedCount
+      const byPlaybookRun = {}; // { playbookId: Map<runId, entry> }
+      for (const e of entries) {
+        if (!isToday(e.timestamp)) continue;
+        if (e.outcome === 'in_progress') continue; // skip checkpoints
+        const pid = e.playbookId;
+        if (!byPlaybookRun[pid]) byPlaybookRun[pid] = new Map();
+        const runMap = byPlaybookRun[pid];
+        if (!e.runId) {
+          // Legacy entries without runId — count directly
+          runMap.set(`legacy:${e.id || Math.random()}`, e);
+        } else {
+          const existing = runMap.get(e.runId);
+          if (!existing || (e.processedCount || 0) > (existing.processedCount || 0)) {
+            runMap.set(e.runId, e);
+          }
         }
+      }
+      for (const [pid, runMap] of Object.entries(byPlaybookRun)) {
+        todayCounts[pid] = Array.from(runMap.values()).reduce((s, e) => s + (e.processedCount || 0), 0);
       }
 
       for (const [id, pb] of Object.entries(playbooks)) {
@@ -847,13 +875,25 @@ function exportData(collection, format, label) {
 function getTodayCount(playbookId) {
   return new Promise(resolve => {
     // Bug 21: limit:0 → no slice in data-store so historical entries don't crowd out today's
-    // Bug 2: sum processedCount across all outcomes, not just 'complete', to block stop-and-retry bypass
+    // Bug 4: skip checkpoints (in_progress) and dedupe by runId keeping highest processedCount
     chrome.runtime.sendMessage({
       action: 'getData', collection: 'activityLog', options: { limit: 0 }
     }, (data) => {
-      const total = (data?.entries || [])
-        .filter(e => e.playbookId === playbookId && isToday(e.timestamp))
-        .reduce((sum, e) => sum + (e.processedCount || 0), 0);
+      const byRun = new Map();
+      for (const e of (data?.entries || [])) {
+        if (e.playbookId !== playbookId) continue;
+        if (!isToday(e.timestamp)) continue;
+        if (e.outcome === 'in_progress') continue; // skip checkpoints
+        if (!e.runId) {
+          byRun.set(`legacy:${e.id || Math.random()}`, e);
+        } else {
+          const existing = byRun.get(e.runId);
+          if (!existing || (e.processedCount || 0) > (existing.processedCount || 0)) {
+            byRun.set(e.runId, e);
+          }
+        }
+      }
+      const total = Array.from(byRun.values()).reduce((sum, e) => sum + (e.processedCount || 0), 0);
       resolve(total);
     });
   });

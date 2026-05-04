@@ -16,7 +16,7 @@
 
 export const DEFAULT_SELECTOR_REGISTRIES = {
   'linkedin.invitations': {
-    version: 1,
+    version: 2,
     invitationCard: {
       strategies: [
         { type: 'css', value: '[data-view-name="pending-invitation"]' },

@@ -27,9 +27,13 @@ class BreakSignal {}
  */
 export function classifyError(msg) {
   if (!msg) return null;
-  if (/timeout|aborted|ECONNREFUSED|fetch|network/i.test(msg)) return 'transient';
-  if (/401|403|invalid api key/i.test(msg)) return 'auth';
-  if (/429|rate limit/i.test(msg)) return 'rate_limit';
+  // Bug 9: expanded transient patterns beyond ECONNREFUSED/timeout/fetch/network
+  // to cover DNS (EAI_AGAIN), routing (EHOSTUNREACH/ENETUNREACH), socket
+  // resets, and ETIMEDOUT — common Node/network errors that previously
+  // fell through to "unknown".
+  if (/timeout|aborted|ECONN|EAI_|EHOST|ENET|ETIMEDOUT|fetch|network|dns|socket hang up|connection reset/i.test(msg)) return 'transient';
+  if (/401|403|invalid api key|unauthor/i.test(msg)) return 'auth';
+  if (/429|rate limit|quota/i.test(msg)) return 'rate_limit';
   return 'unknown';
 }
 
@@ -90,6 +94,16 @@ export class PlaybookEngine {
     this._reviewBatchSize = playbook.settings?.reviewBatchSize || 10;
     this._reviewApprovedRemaining = 0;
     this._reviewApproveAll = false;
+    // Bug 1: track loop nesting depth so aiCall can decide to throw (outside
+    // loops) or swallow+log (inside loops) on transient errors.
+    this._loopDepth = 0;
+    // Bug 27: avoid log spam — only warn once per playbookId per run when a
+    // safetyCap is hit.
+    this._warnedSafetyCaps = new Set();
+    // Bug 4 / Bug 21: stable id shared across all activity-log entries from a
+    // single run. The popup uses this to dedupe checkpoints against the
+    // canonical _finalize entry.
+    this._runId = null;
   }
 
   /**
@@ -99,6 +113,10 @@ export class PlaybookEngine {
   async run() {
     this.stopRequested = false;
     this.startTime = Date.now();
+    // Bug 4: assign a runId at the start so checkpoints + the final entry
+    // share the same id. The popup uses this to dedupe checkpoints against
+    // the canonical _finalize entry when summing daily counts.
+    this._runId = `run_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     this.vars = {
       settings: this.settings,
       stopRequested: false,
@@ -166,6 +184,9 @@ export class PlaybookEngine {
     sendMessage({
       action: MSG.LOG_ACTIVITY,
       entry: {
+        // Bug 4: shared runId lets the popup dedupe this canonical entry
+        // against any earlier in-progress checkpoint entries.
+        ...(this._runId ? { runId: this._runId } : {}),
         playbookId: this.playbook.id,
         action: 'playbook_run',
         outcome: runError ? 'error' : (this.stopRequested ? 'stopped' : 'complete'),
@@ -174,6 +195,9 @@ export class PlaybookEngine {
         durationMs: Date.now() - this.startTime,
         ...(result.tokensUsed ? { tokensUsed: result.tokensUsed } : {}),
         ...(result.summary ? { summary: result.summary } : {}),
+        // Bug 22: surface per-cycle cost breakdown for interactive runs
+        // so the popup can render a budget timeline.
+        ...(result.cycleHistory ? { cycleHistory: result.cycleHistory } : {}),
         ...(runError ? { error: runError } : {})
       }
     }).catch(() => {});
@@ -199,10 +223,20 @@ export class PlaybookEngine {
 
     this.stopRequested = false;
     this.startTime = Date.now();
+    // Bug 4 / Bug 21: ensure interactive runs also get a runId. (run() sets
+    // this when it dispatches to runInteractive, but direct callers may
+    // bypass run() and reach this method.)
+    if (!this._runId) {
+      this._runId = `run_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    }
     const maxCycles = options.maxCycles || 20;
     const maxTokensBudget = this.playbook.settings?.maxTokensBudget || 100000;
     let totalTokensUsed = 0;
     this._lastInteractiveSummary = null;
+    // Bug 22: track per-cycle token usage so _finalize can surface a
+    // breakdown in the activity log entry. Capped at the last 20 cycles
+    // to keep the log entry size bounded.
+    const cycleHistory = [];
 
     Overlay.showOverlay('AI Interactive Mode');
     Overlay.updateStatus('Observing page...');
@@ -241,6 +275,15 @@ export class PlaybookEngine {
         // Track token usage and enforce budget
         const used = (aiResponse?.usage?.prompt_tokens || 0) + (aiResponse?.usage?.completion_tokens || 0);
         totalTokensUsed += used;
+        // Bug 22: capture per-cycle cost so the popup/history view can
+        // explain *which* cycles drove the budget exhaustion.
+        cycleHistory.push({
+          cycle: cycle + 1,
+          tokensUsed: used,
+          ...(aiResponse?.parsed?.reasoning
+            ? { reasoning: String(aiResponse.parsed.reasoning).slice(0, 200) }
+            : {})
+        });
         Overlay.updateStatus(`Tokens: ${totalTokensUsed}/${maxTokensBudget} (cycle ${cycle + 1}/${maxCycles})`);
         if (totalTokensUsed > maxTokensBudget) {
           Overlay.updateStatus(`Token budget exceeded (${totalTokensUsed}/${maxTokensBudget}) — stopping`);
@@ -335,6 +378,9 @@ export class PlaybookEngine {
       tokensUsed: totalTokensUsed,
       summary,
       exitReason,
+      // Bug 22: cap to the last 20 cycles so the log entry stays bounded
+      // even on long runs that approach maxCycles=100+.
+      ...(cycleHistory.length > 0 ? { cycleHistory: cycleHistory.slice(-20) } : {}),
       ...(runError ? { error: runError } : {})
     };
 
@@ -494,33 +540,51 @@ export class PlaybookEngine {
     // Bug 12: prefer the new "safetyCap" field over legacy "maxIterations".
     // Both mean the same thing — a hard cap on iterations regardless of
     // breakIf — but safetyCap is the surfaced name authors should use.
-    const cap = typeof step.safetyCap === 'number'
-      ? step.safetyCap
-      : (typeof step.maxIterations === 'number' ? step.maxIterations : Infinity);
+    // Bug 8: when the author has provided a breakIf, trust them and default
+    // the cap to Infinity. The 10000 fallback only applies when neither
+    // breakIf nor an explicit cap is set (the validator should reject this
+    // case, but we keep it as a safety net).
+    let cap;
+    if (typeof step.safetyCap === 'number') cap = step.safetyCap;
+    else if (typeof step.maxIterations === 'number') cap = step.maxIterations;
+    else if (step.breakIf) cap = Infinity;
+    else cap = 10000;
     let iter = 0;
-    while (!this.stopRequested) {
-      if (iter >= cap) {
-        if (cap !== Infinity) {
-          console.warn(`PlaybookEngine: loop hit safetyCap ${cap}; breaking`);
+    // Bug 1: track loop nesting so aiCall can decide to throw vs. swallow.
+    this._loopDepth = (this._loopDepth || 0) + 1;
+    try {
+      while (!this.stopRequested) {
+        if (iter >= cap) {
+          if (cap !== Infinity) {
+            // Bug 27: only warn once per playbookId per run. Repeated warnings
+            // on every iteration of a hot loop turned the console into noise.
+            const id = this.playbook.id;
+            if (!this._warnedSafetyCaps.has(id)) {
+              this._warnedSafetyCaps.add(id);
+              console.warn(`PlaybookEngine: loop hit safetyCap ${cap} (playbook=${id}); breaking. Suppressing further warnings for this playbook this run.`);
+            }
+          }
+          break;
         }
-        break;
+        if (step.breakIf) {
+          if (evaluate(step.breakIf, this.vars)) break;
+        }
+        // Bug 11: clear lastError at the start of each iteration so a stale
+        // error from a previous iteration doesn't poison subsequent ones.
+        delete this.vars.lastError;
+        try {
+          await this._executeSteps(step.steps);
+        } catch (err) {
+          if (err instanceof BreakSignal) break;
+          throw err;
+        }
+        iter++;
+        // Bug 9: periodic checkpoint so progress is recorded even if the page
+        // reloads mid-run.
+        if (iter % 10 === 0) this._emitCheckpoint();
       }
-      if (step.breakIf) {
-        if (evaluate(step.breakIf, this.vars)) break;
-      }
-      // Bug 11: clear lastError at the start of each iteration so a stale
-      // error from a previous iteration doesn't poison subsequent ones.
-      delete this.vars.lastError;
-      try {
-        await this._executeSteps(step.steps);
-      } catch (err) {
-        if (err instanceof BreakSignal) break;
-        throw err;
-      }
-      iter++;
-      // Bug 9: periodic checkpoint so progress is recorded even if the page
-      // reloads mid-run.
-      if (iter % 10 === 0) this._emitCheckpoint();
+    } finally {
+      this._loopDepth = Math.max(0, (this._loopDepth || 1) - 1);
     }
   }
 
@@ -529,25 +593,31 @@ export class PlaybookEngine {
     const items = this._resolve(step.items);
     if (!items || !Array.isArray(items)) return;
 
-    let iter = 0;
-    for (const item of items) {
-      if (this.stopRequested) break;
-      if (step.breakIf && evaluate(step.breakIf, this.vars)) break;
+    // Bug 1: mark loop context so aiCall throws-outside / swallows-inside.
+    this._loopDepth = (this._loopDepth || 0) + 1;
+    try {
+      let iter = 0;
+      for (const item of items) {
+        if (this.stopRequested) break;
+        if (step.breakIf && evaluate(step.breakIf, this.vars)) break;
 
-      this.vars[step.itemVar] = item;
-      // Bug 11: fresh slate per iteration — a transient error on item N
-      // shouldn't leave $lastError set when iterating item N+1.
-      delete this.vars.lastError;
+        this.vars[step.itemVar] = item;
+        // Bug 11: fresh slate per iteration — a transient error on item N
+        // shouldn't leave $lastError set when iterating item N+1.
+        delete this.vars.lastError;
 
-      try {
-        await this._executeSteps(step.steps);
-      } catch (err) {
-        if (err instanceof BreakSignal) break;
-        throw err;
+        try {
+          await this._executeSteps(step.steps);
+        } catch (err) {
+          if (err instanceof BreakSignal) break;
+          throw err;
+        }
+        iter++;
+        // Bug 9: periodic checkpoint mirrors the loop path.
+        if (iter % 10 === 0) this._emitCheckpoint();
       }
-      iter++;
-      // Bug 9: periodic checkpoint mirrors the loop path.
-      if (iter % 10 === 0) this._emitCheckpoint();
+    } finally {
+      this._loopDepth = Math.max(0, (this._loopDepth || 1) - 1);
     }
   }
 
@@ -630,11 +700,22 @@ export class PlaybookEngine {
    * if the page reloads before _finalize. Called from loop and forEach
    * every Nth iteration. The History tab consumer should treat
    * 'in_progress' outcomes as partial entries.
+   *
+   * Bug 35: _emitCheckpoint uses fire-and-forget sendMessage. If the SW is
+   * killed between checkpoints, in-flight log writes are lost. This is
+   * acceptable because final _finalize emits the canonical entry; checkpoints
+   * exist only to surface in-progress state for runs that crash before
+   * _finalize.
+   *
+   * Bug 4 / Bug 21: every entry carries the run's stable runId so the popup
+   * can dedupe checkpoints against the canonical _finalize entry instead of
+   * triple-counting processedCount in daily totals.
    */
   _emitCheckpoint() {
     sendMessage({
       action: MSG.LOG_ACTIVITY,
       entry: {
+        ...(this._runId ? { runId: this._runId } : {}),
         playbookId: this.playbook.id,
         action: 'playbook_checkpoint',
         outcome: 'in_progress',

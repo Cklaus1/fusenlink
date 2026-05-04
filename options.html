@@ -69,6 +69,21 @@
     .toast.show {
       opacity: 1;
     }
+    .info-box {
+      padding: 12px;
+      background: #f5f5f5;
+      border-radius: 6px;
+      font-family: -apple-system, system-ui, sans-serif;
+      font-size: 13px;
+      color: #333;
+    }
+    .info-box .migration-entry {
+      padding: 4px 0;
+      border-bottom: 1px solid #e0e0e0;
+    }
+    .info-box .migration-entry:last-child {
+      border-bottom: none;
+    }
   </style>
 </head>
 <body>
@@ -171,11 +186,11 @@
     <button type="submit">Save Cohort</button>
   </form>
   
-  <h2>Storage</h2>
-  <div id="storageStats" class="description">Storage usage: not yet measured.</div>
+  <h2>Storage Usage</h2>
+  <div id="storageStats" class="info-box">Loading...</div>
 
   <h2>Recent Updates</h2>
-  <div id="migrationLog" class="description">No migrations recorded.</div>
+  <div id="migrationLog" class="info-box">Loading...</div>
 
   <div id="toast" class="toast">Settings saved!</div>
 

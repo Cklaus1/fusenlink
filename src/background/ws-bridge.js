@@ -24,6 +24,10 @@ let messageHandler = null;
 let reconnectDelay = RECONNECT_MIN_MINUTES; // Exponential backoff
 let reconnectAttempts = 0;
 let consecutiveBackstops = 0;
+// Bug 19 fix: don't reset consecutiveBackstops immediately on open — wait for
+// the connection to be stable for 30 seconds first so rapid open/close cycles
+// (sidecar boots, accepts, then crashes within 100ms) don't prevent escalation.
+let stableTimer = null;
 
 function getWsUrl() {
   return `ws://${configuredHost}:${configuredPort}/ws`;
@@ -96,7 +100,14 @@ function connect() {
       console.log('[ws-bridge] Connected to sidecar');
       reconnectDelay = RECONNECT_MIN_MINUTES; // Reset backoff on success
       reconnectAttempts = 0;
-      consecutiveBackstops = 0; // Reset backstop escalation on successful connection
+      // Don't reset consecutiveBackstops yet — wait for stability (30s uptime).
+      // This prevents a rapid open/close crash loop from resetting the counter
+      // before it can escalate to longer backstop delays.
+      if (stableTimer) clearTimeout(stableTimer);
+      stableTimer = setTimeout(() => {
+        consecutiveBackstops = 0;
+        stableTimer = null;
+      }, 30000);
       clearReconnect();
 
       // Flush any responses that were queued while the socket was closed
@@ -141,6 +152,11 @@ function connect() {
     socket.addEventListener('close', () => {
       console.log('[ws-bridge] Disconnected from sidecar');
       socket = null;
+      // Cancel stability timer — connection didn't hold long enough.
+      if (stableTimer) {
+        clearTimeout(stableTimer);
+        stableTimer = null;
+      }
       scheduleReconnect();
     });
 

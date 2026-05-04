@@ -19,7 +19,8 @@ import {
   deleteSequence,
   setSequenceStatus,
   nextSendableTime,
-  reapCompletedContacts
+  reapCompletedContacts,
+  restagger
 } from '../src/background/sequence-manager.js';
 
 // Backing in-memory storage. Wired in beforeEach.
@@ -467,7 +468,9 @@ describe('enrollContacts staggering + quiet hours', () => {
       name: 'Big',
       steps: [{ template: 't' }],
       // Pin TZ to host so getHours()-based assertions match.
-      settings: { timezone: HOST_TZ, weekdaysOnly: false }
+      // Bug 3: default staggerMinutes is now 1; this test explicitly opts
+      // back to 5 to exercise the multi-minute spacing math.
+      settings: { timezone: HOST_TZ, weekdaysOnly: false, staggerMinutes: 5 }
     });
 
     const contacts = Array.from({ length: 50 }, (_, i) => ({
@@ -824,5 +827,216 @@ describe('processSequences single-read consolidation (Bug 34)', () => {
     const after = readStored('data.sequences').items[seq.id];
     expect(after.contacts[url].status).toBe('completed');
     expect(after.stats.completed).toBe(1);
+  });
+});
+
+// --- Bug 2 (revisited): weekdaysOnly default flip must not affect old sequences ---
+
+describe('weekdaysOnly default-flip backward compat (Bug 2)', () => {
+  test('old sequence (no weekdaysOnly field): Saturday send-time stays Saturday', () => {
+    // Saturday 2026-04-11 10:00 UTC.
+    const sat10am = Date.UTC(2026, 3, 11, 10, 0, 0);
+    // Old-shape sequence: settings exist but weekdaysOnly is undefined.
+    const oldSequence = {
+      settings: {
+        timezone: 'UTC',
+        quietHoursStart: 8,
+        quietHoursEnd: 20
+        // weekdaysOnly intentionally absent (legacy data)
+      }
+    };
+    const next = nextSendableTime(sat10am, oldSequence);
+    // Must NOT shift to Monday — strict-equality default treats undefined as
+    // false, preserving prior behavior.
+    expect(next).toBe(sat10am);
+    expect(new Date(next).getUTCDay()).toBe(6); // Saturday
+  });
+
+  test('new sequence created via createSequence has weekdaysOnly: true and shifts Saturday → Monday', async () => {
+    const seq = await createSequence({
+      name: 'NewDefault',
+      steps: [{ template: 't' }]
+    });
+    // Saturday 2026-04-11 10:00 UTC.
+    const sat10am = Date.UTC(2026, 3, 11, 10, 0, 0);
+    const next = nextSendableTime(sat10am, seq);
+    // New sequences default to weekdaysOnly: true → Sat shifts to Mon 8am UTC.
+    expect(seq.settings.weekdaysOnly).toBe(true);
+    expect(next).toBe(Date.UTC(2026, 3, 13, 8, 0, 0));
+  });
+
+  test('explicit weekdaysOnly: false overrides createSequence default', async () => {
+    const seq = await createSequence({
+      name: 'OptOut',
+      steps: [{ template: 't' }],
+      settings: { weekdaysOnly: false, timezone: 'UTC', quietHoursStart: 8, quietHoursEnd: 20 }
+    });
+    expect(seq.settings.weekdaysOnly).toBe(false);
+    const sat10am = Date.UTC(2026, 3, 11, 10, 0, 0);
+    expect(nextSendableTime(sat10am, seq)).toBe(sat10am);
+  });
+});
+
+// --- Bug 3 (revisited): default staggerMinutes is 1 ---
+
+describe('default staggerMinutes (Bug 3)', () => {
+  test('createSequence with no settings: staggerMinutes defaults to 1', async () => {
+    const seq = await createSequence({ name: 'D', steps: [{ template: 't' }] });
+    expect(seq.settings.staggerMinutes).toBe(1);
+  });
+
+  test('enrollContacts spaces contacts 1 minute apart by default', async () => {
+    // Pin tz/window so quiet-hours don't interfere; weekdaysOnly:false to
+    // avoid weekend shifts. Don't override staggerMinutes — exercise the default.
+    const seq = await createSequence({
+      name: 'DefaultStagger',
+      steps: [{ template: 't' }],
+      settings: { quietHoursStart: 0, quietHoursEnd: 24, weekdaysOnly: false }
+    });
+    const result = await enrollContacts(seq.id, [
+      { name: 'A', profileUrl: 'https://www.linkedin.com/in/a/' },
+      { name: 'B', profileUrl: 'https://www.linkedin.com/in/b/' },
+      { name: 'C', profileUrl: 'https://www.linkedin.com/in/c/' }
+    ]);
+    expect(result.enrolled).toBe(3);
+    const stored = readStored('data.sequences').items[seq.id];
+    const tA = new Date(stored.contacts['https://www.linkedin.com/in/a/'].nextMessageAt).getTime();
+    const tB = new Date(stored.contacts['https://www.linkedin.com/in/b/'].nextMessageAt).getTime();
+    const tC = new Date(stored.contacts['https://www.linkedin.com/in/c/'].nextMessageAt).getTime();
+    expect(tB - tA).toBe(60 * 1000);
+    expect(tC - tB).toBe(60 * 1000);
+  });
+});
+
+// --- Bug 28: wrap-around quiet hours (start > end) ---
+
+describe('nextSendableTime wrap-around quiet hours (Bug 28)', () => {
+  test('quietHoursStart=23, quietHoursEnd=7: a 02:00 UTC send is valid', () => {
+    // Tuesday 2026-04-14 02:00 UTC — clearly inside the wrap window 23..7.
+    const tue02 = Date.UTC(2026, 3, 14, 2, 0, 0);
+    const sequence = {
+      settings: {
+        timezone: 'UTC',
+        quietHoursStart: 23,
+        quietHoursEnd: 7,
+        weekdaysOnly: false
+      }
+    };
+    const next = nextSendableTime(tue02, sequence);
+    expect(next).toBe(tue02);
+  });
+
+  test('wrap window 23..7: 23:30 UTC stays 23:30 UTC', () => {
+    const tue2330 = Date.UTC(2026, 3, 14, 23, 30, 0);
+    const sequence = {
+      settings: { timezone: 'UTC', quietHoursStart: 23, quietHoursEnd: 7, weekdaysOnly: false }
+    };
+    expect(nextSendableTime(tue2330, sequence)).toBe(tue2330);
+  });
+
+  test('wrap window 23..7: 12:00 UTC (midday) shifts forward to 23:00 UTC', () => {
+    // Tuesday 2026-04-14 12:00 UTC — outside the wrap window.
+    const tue12 = Date.UTC(2026, 3, 14, 12, 0, 0);
+    const sequence = {
+      settings: { timezone: 'UTC', quietHoursStart: 23, quietHoursEnd: 7, weekdaysOnly: false }
+    };
+    const next = nextSendableTime(tue12, sequence);
+    expect(next).toBe(Date.UTC(2026, 3, 14, 23, 0, 0));
+  });
+});
+
+// --- Bug 31: restagger ---
+
+describe('restagger pending contacts (Bug 31)', () => {
+  test('restagger is exported', () => {
+    expect(typeof restagger).toBe('function');
+  });
+
+  test('only restages contacts with no messages and active status; mid-sequence contacts unchanged', async () => {
+    // Use noQuiet so initial nextMessageAt is approx Date.now() with stagger 0.
+    const seq = await createSequence({
+      name: 'R',
+      steps: [{ template: 'first' }, { template: 'second' }],
+      settings: { staggerMinutes: 0, quietHoursStart: 0, quietHoursEnd: 24, weekdaysOnly: false }
+    });
+    const urlA = 'https://www.linkedin.com/in/a/';
+    const urlB = 'https://www.linkedin.com/in/b/';
+    const urlC = 'https://www.linkedin.com/in/c/';
+    await enrollContacts(seq.id, [
+      { name: 'A', profileUrl: urlA },
+      { name: 'B', profileUrl: urlB },
+      { name: 'C', profileUrl: urlC }
+    ]);
+
+    // Simulate B already having received message #1 (mid-sequence).
+    const data = readStored('data.sequences');
+    data.items[seq.id].contacts[urlB].messages = [
+      { step: 0, text: 'sent', sentAt: new Date().toISOString() }
+    ];
+    data.items[seq.id].contacts[urlB].currentStep = 1;
+    const bNextBefore = data.items[seq.id].contacts[urlB].nextMessageAt;
+    // Bump staggerMinutes to 10 so re-stagger spacing is detectably different.
+    data.items[seq.id].settings.staggerMinutes = 10;
+    _localStore.set('data.sequences', data);
+
+    const result = await restagger(seq.id);
+    // A and C are pending; B is mid-sequence and must be skipped.
+    expect(result.restaggered).toBe(2);
+
+    const after = readStored('data.sequences').items[seq.id];
+    expect(after.contacts[urlB].nextMessageAt).toBe(bNextBefore);
+
+    // A and C should now be 10 minutes apart.
+    const tA = new Date(after.contacts[urlA].nextMessageAt).getTime();
+    const tC = new Date(after.contacts[urlC].nextMessageAt).getTime();
+    expect(tC - tA).toBe(10 * 60 * 1000);
+  });
+
+  test('restagger no-op for unknown sequenceId', async () => {
+    const result = await restagger('seq_does_not_exist');
+    expect(result).toBeUndefined();
+  });
+});
+
+// --- Bug 20: cohort normalizeMembers must keep entries without LinkedIn URL ---
+
+describe('cohort normalizeMembers keeps off-LinkedIn members (Bug 20)', () => {
+  test('saving cohort with members lacking linkedin retains them on read', async () => {
+    // Wire storage mock as in beforeEach (already done). Test through public API.
+    const Cohort = await import('../src/background/cohort-manager.js');
+    await Cohort.saveCohortConfig({
+      cohort: 'Test',
+      members: [
+        { name: 'WithLinkedIn', linkedin: 'https://www.linkedin.com/in/foo/', company: 'X' },
+        { name: 'NoLinkedIn', company: 'Y' },
+        { name: 'EmptyLinkedIn', linkedin: '', company: 'Z' }
+      ]
+    });
+    const cfg = await Cohort.getCohortConfig();
+    expect(cfg.members).toHaveLength(3);
+    expect(cfg.members.find(m => m.name === 'NoLinkedIn')).toEqual({
+      name: 'NoLinkedIn', linkedin: '', company: 'Y'
+    });
+    expect(cfg.members.find(m => m.name === 'EmptyLinkedIn')).toEqual({
+      name: 'EmptyLinkedIn', linkedin: '', company: 'Z'
+    });
+  });
+
+  test('detectWarmIntros skips members without linkedin (per-iteration filter)', async () => {
+    const Cohort = await import('../src/background/cohort-manager.js');
+    await Cohort.saveCohortConfig({
+      cohort: 'Test',
+      members: [
+        { name: 'NoLinkedIn', company: 'Y' },
+        { name: 'Has', linkedin: 'https://www.linkedin.com/in/has/', company: 'X' }
+      ],
+      // The "Has" member has the target as a connection.
+      connectionMap: {
+        has: ['https://www.linkedin.com/in/target/']
+      }
+    });
+    const matches = await Cohort.detectWarmIntros('https://www.linkedin.com/in/target/');
+    expect(matches).toHaveLength(1);
+    expect(matches[0].memberName).toBe('Has');
   });
 });

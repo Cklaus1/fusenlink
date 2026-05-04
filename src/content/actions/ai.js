@@ -78,9 +78,15 @@ export async function aiCall(step, engine, Overlay) {
     Overlay.updateStatus(hint);
     console.error('aiCall error:', response.error);
     if (step.var) engine.vars[step.var] = { error: response.error };
-    // Bug 35: by default, propagate the error so downstream steps don't
-    // operate on the {error: ...} sentinel. Opt out with breakOnError: false.
-    if (step.breakOnError !== false) {
+    // Bug 1: a single AI hiccup in a forEach used to abort the entire bulk run.
+    // Default behavior is now: throw OUTSIDE loops, swallow INSIDE loops so
+    // bulk runs continue past transient errors. Authors can override:
+    //   breakOnError: true  -> always throw
+    //   breakOnError: false -> never throw
+    const insideLoop = (engine._loopDepth || 0) > 0;
+    const shouldThrow = step.breakOnError === true ||
+                        (step.breakOnError !== false && !insideLoop);
+    if (shouldThrow) {
       throw new Error(`aiCall failed: ${response.error}`);
     }
   } else if (step.var) {

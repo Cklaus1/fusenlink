@@ -368,18 +368,20 @@ async function fetchAnthropic(config, messages, body) {
 
   if (!response.ok) {
     const errorText = await response.text();
-    const safeMessage = `Anthropic API error ${response.status}`;
+    let parsedBody;
+    try { parsedBody = JSON.parse(errorText); } catch {}
+    const detailMsg = parsedBody ? extractProviderErrorMessage(parsedBody) : null;
+    const safeMessage = detailMsg
+      ? `Anthropic API error ${response.status}: ${detailMsg}`
+      : `Anthropic API error ${response.status}`;
     const err = new Error(safeMessage);
     err.retryable = RETRYABLE_STATUSES.has(response.status);
     err.bodyDetail = errorText.slice(0, 500);
     // Bug 19: Gate raw body logging behind debug flag.
     const isDebug = (typeof globalThis !== 'undefined' && globalThis.FUSENLINK_DEBUG)
                  || (typeof localStorage !== 'undefined' && localStorage.getItem('fusenlink_debug') === '1');
-    if (isDebug) {
-      console.warn(safeMessage, errorText.slice(0, 200));
-    } else {
-      console.warn(safeMessage); // status code only
-    }
+    if (isDebug) console.warn(safeMessage, errorText.slice(0, 200));
+    else console.warn(safeMessage);
     throw err;
   }
 

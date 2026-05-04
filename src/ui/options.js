@@ -62,10 +62,10 @@ const limitConnect = document.getElementById('limitConnect');
 const limitExtract = document.getElementById('limitExtract');
 
 if (limitsForm) {
-  // Load current limits
+  // Load current limits via message router for consistency
   document.addEventListener('DOMContentLoaded', () => {
-    chrome.storage.local.get('dailyLimits', (result) => {
-      const limits = result.dailyLimits || {};
+    chrome.runtime.sendMessage({ action: 'getDailyLimits' }, (limits) => {
+      if (chrome.runtime.lastError || !limits) return;
       if (limits['accept-invites'] && limitAccept) limitAccept.value = limits['accept-invites'];
       if (limits['bulk-connect'] && limitConnect) limitConnect.value = limits['bulk-connect'];
       if (limits['extract-contacts'] && limitExtract) limitExtract.value = limits['extract-contacts'];
@@ -82,7 +82,13 @@ if (limitsForm) {
       'inbox-analysis': parseInt(limitExtract.value) || 10,
       'ai-profile-review': parseInt(limitExtract.value) || 10
     };
-    chrome.storage.local.set({ dailyLimits: limits }, () => showToast());
+    chrome.runtime.sendMessage({ action: 'setDailyLimits', limits }, (response) => {
+      if (chrome.runtime.lastError) {
+        console.warn('Failed to set daily limits:', chrome.runtime.lastError.message);
+        return;
+      }
+      if (response?.success) showToast();
+    });
   });
 }
 
