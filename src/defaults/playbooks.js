@@ -149,12 +149,13 @@ export const DEFAULT_PLAYBOOKS = {
 
   'bulk-connect': {
     id: 'bulk-connect',
-    version: 2,
+    version: 3,
     name: 'Connect All',
     description: 'Send connection requests to profiles in search results',
     urlPattern: 'linkedin\\.com/search/results/',
     selectors: 'linkedin.search',
-    buttonLabel: null, // Dynamic — set at runtime with maxInvites
+    // The injector substitutes ≤ <maxItems> from user settings at runtime
+    buttonLabel: 'Connect All ≤ 50',
     settings: {
       maxItems: 50,
       delayMs: 1500,
