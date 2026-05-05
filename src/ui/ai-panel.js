@@ -10,13 +10,14 @@ let pendingResolve = null; // Track pending promise to prevent orphan on double-
  * Show a prompt dialog and wait for user selection.
  * @param {Object} options
  * @param {string} options.title - Dialog title
- * @param {string} options.body - Content body (supports multi-line)
+ * @param {string|Object} options.body - Content body. Plain string/object renders as
+ *   pre-formatted text. An object with `__type: 'inbox-analysis-result'` renders
+ *   a structured result with per-item action buttons (Star / Move / Draft Reply).
  * @param {string[]} options.options - Array of button labels
  * @returns {Promise<string>} The selected option label
  */
 export function showPrompt({ title, body, options }) {
   return new Promise((resolve) => {
-    // If a previous prompt is pending, resolve it with null so it doesn't orphan
     if (pendingResolve) {
       pendingResolve(null);
       pendingResolve = null;
@@ -37,27 +38,22 @@ export function showPrompt({ title, body, options }) {
       padding: '24px',
       zIndex: '10000',
       fontFamily: 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
-      maxWidth: '500px',
-      width: '90%',
-      maxHeight: '80vh',
+      maxWidth: '640px',
+      width: '92%',
+      maxHeight: '82vh',
       overflow: 'auto',
       border: '1px solid #e0e0e0'
     });
 
-    // Backdrop
     const backdrop = document.createElement('div');
     backdrop.id = 'li-bulk-ai-backdrop';
     Object.assign(backdrop.style, {
       position: 'fixed',
-      top: '0',
-      left: '0',
-      right: '0',
-      bottom: '0',
+      top: '0', left: '0', right: '0', bottom: '0',
       backgroundColor: 'rgba(0, 0, 0, 0.5)',
       zIndex: '9999'
     });
 
-    // Title
     const titleEl = document.createElement('h3');
     titleEl.textContent = title || 'AI Result';
     Object.assign(titleEl.style, {
@@ -66,35 +62,22 @@ export function showPrompt({ title, body, options }) {
       fontSize: '18px',
       fontWeight: 'bold'
     });
+    panelElement.appendChild(titleEl);
 
-    // Body
-    const bodyEl = document.createElement('div');
-    bodyEl.style.whiteSpace = 'pre-wrap';
-    bodyEl.style.marginBottom = '20px';
-    bodyEl.style.fontSize = '14px';
-    bodyEl.style.lineHeight = '1.5';
-    bodyEl.style.color = '#333';
-
-    // Handle body that might be an object; truncate if excessively large
-    const MAX_BODY_LENGTH = 10000;
-    let displayBody;
-    if (typeof body === 'object') {
-      try { displayBody = JSON.stringify(body, null, 2); } catch { displayBody = '[Unable to serialize]'; }
+    // Rich rendering for known structured result shapes; fall back to text.
+    if (body && typeof body === 'object' && body.__type === 'inbox-analysis-result') {
+      panelElement.appendChild(renderInboxResult(body));
     } else {
-      displayBody = String(body || '');
+      panelElement.appendChild(renderTextBody(body));
     }
-    if (displayBody.length > MAX_BODY_LENGTH) {
-      displayBody = displayBody.slice(0, MAX_BODY_LENGTH) + '\n... (truncated)';
-    }
-    bodyEl.textContent = displayBody;
 
-    // Buttons container
     const buttonsEl = document.createElement('div');
     Object.assign(buttonsEl.style, {
       display: 'flex',
       gap: '8px',
       flexWrap: 'wrap',
-      justifyContent: 'flex-end'
+      justifyContent: 'flex-end',
+      marginTop: '16px'
     });
 
     for (const option of (options || ['OK'])) {
@@ -111,49 +94,208 @@ export function showPrompt({ title, body, options }) {
         color: option === options[0] ? 'white' : '#0a66c2',
         transition: 'background-color 0.2s'
       });
-
       btn.addEventListener('click', () => {
         pendingResolve = null;
         removePanel();
         backdrop.remove();
         resolve(option);
       });
-
       buttonsEl.appendChild(btn);
     }
 
-    panelElement.appendChild(titleEl);
-    panelElement.appendChild(bodyEl);
     panelElement.appendChild(buttonsEl);
-
     document.body.appendChild(backdrop);
     document.body.appendChild(panelElement);
   });
 }
 
-/**
- * Show an AI result display (non-blocking, with dismiss).
- * @param {Object} options
- * @param {string} options.title
- * @param {string|Object} options.content
- */
-export function showResult({ title, content }) {
-  return showPrompt({
-    title,
-    body: content,
-    options: ['Done']
+function renderTextBody(body) {
+  const bodyEl = document.createElement('div');
+  Object.assign(bodyEl.style, {
+    whiteSpace: 'pre-wrap',
+    fontSize: '14px',
+    lineHeight: '1.5',
+    color: '#333'
   });
+  const MAX_BODY_LENGTH = 10000;
+  let display;
+  if (typeof body === 'object') {
+    try { display = JSON.stringify(body, null, 2); } catch { display = '[Unable to serialize]'; }
+  } else {
+    display = String(body || '');
+  }
+  if (display.length > MAX_BODY_LENGTH) display = display.slice(0, MAX_BODY_LENGTH) + '\n... (truncated)';
+  bodyEl.textContent = display;
+  return bodyEl;
 }
 
 /**
- * Remove the AI panel if visible.
+ * Render the inbox-analysis result with per-item action buttons.
+ * The body shape is { __type, classification: {digest, highPriority, lowPriority, spam}, conversations }.
+ * Each highPriority/lowPriority/spam item is matched to a conversation by name to recover threadUrl,
+ * then rendered as a row with action buttons that navigate to the thread with a query param the
+ * thread-page bundle uses to auto-fire the corresponding playbook.
  */
+function renderInboxResult(body) {
+  const { classification = {}, conversations = [] } = body;
+  const wrap = document.createElement('div');
+  wrap.style.fontSize = '14px';
+  wrap.style.color = '#333';
+
+  // name -> conversation lookup, case-insensitive trim
+  const byName = {};
+  for (const c of conversations) {
+    if (c && c.name) byName[String(c.name).trim().toLowerCase()] = c;
+  }
+  const lookup = (name) => byName[String(name || '').trim().toLowerCase()] || null;
+
+  if (classification.digest) {
+    const digest = document.createElement('p');
+    digest.textContent = classification.digest;
+    Object.assign(digest.style, {
+      margin: '0 0 16px 0',
+      padding: '10px 12px',
+      background: '#f3f6f8',
+      borderLeft: '3px solid #0a66c2',
+      borderRadius: '4px',
+      lineHeight: '1.5'
+    });
+    wrap.appendChild(digest);
+  }
+
+  const sections = [
+    { key: 'highPriority', label: 'High Priority', actions: ['star', 'reply'] },
+    { key: 'lowPriority', label: 'Low Priority', actions: ['reply'] },
+    { key: 'spam', label: 'Spam', actions: ['move'] }
+  ];
+
+  for (const sec of sections) {
+    const items = classification[sec.key] || [];
+    if (!Array.isArray(items) || items.length === 0) continue;
+
+    const h = document.createElement('h4');
+    h.textContent = `${sec.label} (${items.length})`;
+    Object.assign(h.style, {
+      margin: '14px 0 6px 0',
+      fontSize: '13px',
+      color: '#666',
+      textTransform: 'uppercase',
+      letterSpacing: '0.5px'
+    });
+    wrap.appendChild(h);
+
+    for (const item of items) {
+      wrap.appendChild(renderItemRow(item, lookup(item.name), sec.actions));
+    }
+  }
+
+  return wrap;
+}
+
+function renderItemRow(item, conv, actions) {
+  const row = document.createElement('div');
+  Object.assign(row.style, {
+    display: 'flex',
+    alignItems: 'flex-start',
+    gap: '8px',
+    padding: '10px 0',
+    borderBottom: '1px solid #eee'
+  });
+
+  const text = document.createElement('div');
+  text.style.flex = '1';
+  text.style.minWidth = '0';
+
+  const name = document.createElement('div');
+  name.textContent = item.name || '(no name)';
+  name.style.fontWeight = '600';
+  name.style.marginBottom = '2px';
+  text.appendChild(name);
+
+  const reason = item.reason || item.suggestedAction || '';
+  if (reason) {
+    const r = document.createElement('div');
+    r.textContent = reason;
+    Object.assign(r.style, {
+      fontSize: '13px',
+      color: '#555',
+      lineHeight: '1.4'
+    });
+    text.appendChild(r);
+  }
+  row.appendChild(text);
+
+  const btns = document.createElement('div');
+  Object.assign(btns.style, { display: 'flex', gap: '6px', flexShrink: '0' });
+
+  const url = conv && conv.threadUrl ? conv.threadUrl : null;
+  const mkBtn = (label, playbookId, title) => {
+    const b = document.createElement('button');
+    b.textContent = label;
+    b.title = title || label;
+    Object.assign(b.style, {
+      padding: '4px 10px',
+      borderRadius: '14px',
+      border: '1px solid #d0d0d0',
+      cursor: url ? 'pointer' : 'not-allowed',
+      fontSize: '12px',
+      background: 'white',
+      color: '#333',
+      whiteSpace: 'nowrap',
+      opacity: url ? '1' : '0.4'
+    });
+    b.disabled = !url;
+    b.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (!url) return;
+      navigateAndRun(url, playbookId);
+    });
+    return b;
+  };
+
+  const actionMap = {
+    star: () => mkBtn('⭐ Star', 'star-thread', 'Open thread + toggle star'),
+    reply: () => mkBtn('📝 Draft Reply', 'draft-reply', 'Open thread + AI-draft a reply'),
+    move: () => mkBtn('📦 Move to Other', 'mark-as-other', 'Open thread + move to Other inbox')
+  };
+  for (const act of actions) {
+    const make = actionMap[act];
+    if (make) btns.appendChild(make());
+  }
+  row.appendChild(btns);
+  return row;
+}
+
+/**
+ * Navigate to a thread URL with a query param that the thread-page bundle
+ * picks up on init to auto-fire the named playbook. Param is named
+ * `__fl-run` (double underscore) to avoid colliding with any LinkedIn-side
+ * params; the thread-page bundle parses it, dispatches RUN_PLAYBOOK, and
+ * scrubs the param from the URL so a manual reload doesn't re-fire.
+ */
+function navigateAndRun(url, playbookId) {
+  try {
+    const u = new URL(url, location.origin);
+    u.searchParams.set('__fl-run', playbookId);
+    window.location.href = u.toString();
+  } catch {
+    // URL parsing failed (relative href edge case) — fall back to plain nav
+    const sep = url.includes('?') ? '&' : '?';
+    window.location.href = `${url}${sep}__fl-run=${encodeURIComponent(playbookId)}`;
+  }
+}
+
+/**
+ * Show an AI result display (non-blocking, with dismiss).
+ */
+export function showResult({ title, content }) {
+  return showPrompt({ title, body: content, options: ['Done'] });
+}
+
 export function removePanel() {
   const el = panelElement;
-  panelElement = null; // Null out first so re-entrant calls are safe
-  if (el && el.parentNode) {
-    el.parentNode.removeChild(el);
-  }
+  panelElement = null;
+  if (el && el.parentNode) el.parentNode.removeChild(el);
   const backdrop = document.getElementById('li-bulk-ai-backdrop');
   if (backdrop) backdrop.remove();
 }

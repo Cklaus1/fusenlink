@@ -29,12 +29,17 @@ async function initialize() {
   // Inject buttons for the current page
   injectForCurrentPage();
 
+  // Auto-run any playbook requested via ?__fl-run=<id> (used by the
+  // inbox-analysis result panel to hand off to per-thread playbooks).
+  setTimeout(checkAutoRunParam, 1500);
+
   // Watch for URL changes (LinkedIn SPA navigation)
   startWatching((newUrl) => {
     // Small delay to let LinkedIn render
     setTimeout(() => {
       removeAllButtons();
       injectForCurrentPage();
+      checkAutoRunParam();
     }, 1000);
   });
 
@@ -216,6 +221,31 @@ async function runPlaybook(playbookId) {
   } finally {
     currentEngine = null;
   }
+}
+
+/**
+ * If the URL carries ?__fl-run=<playbookId>, fire that playbook once and
+ * scrub the param so a manual reload doesn't re-trigger it. Used by the
+ * AI panel's per-item action buttons to hand off from inbox-analysis to
+ * star-thread / mark-as-other / draft-reply on a specific thread.
+ */
+function checkAutoRunParam() {
+  let id;
+  try {
+    const params = new URLSearchParams(location.search);
+    id = params.get('__fl-run');
+    if (!id) return;
+    // Scrub the param immediately so retries / reloads don't re-fire.
+    params.delete('__fl-run');
+    const qs = params.toString();
+    const newUrl = location.pathname + (qs ? `?${qs}` : '') + location.hash;
+    history.replaceState(history.state, '', newUrl);
+  } catch {
+    return;
+  }
+  if (!loadedPlaybooks || !loadedPlaybooks[id]) return;
+  // Defer one tick so the user sees the navigation land before the panel pops.
+  setTimeout(() => { runPlaybook(id); }, 200);
 }
 
 // Initialize on various load events to handle LinkedIn's SPA behavior

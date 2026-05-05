@@ -447,6 +447,16 @@ export function evaluate(expr, vars = {}) {
  * @returns {any}
  */
 export function resolveValue(value, vars = {}) {
+  if (Array.isArray(value)) {
+    return value.map(v => resolveValue(v, vars));
+  }
+  if (value && typeof value === 'object' && !(value instanceof Node)) {
+    const out = {};
+    for (const [k, v] of Object.entries(value)) {
+      out[k] = resolveValue(v, vars);
+    }
+    return out;
+  }
   if (typeof value !== 'string') return value;
   if (!value.startsWith('$')) return value;
 

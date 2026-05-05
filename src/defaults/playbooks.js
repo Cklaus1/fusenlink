@@ -696,7 +696,11 @@ export const DEFAULT_PLAYBOOKS = {
           name: { childSelector: 'conversationName', attribute: 'textContent' },
           preview: { childSelector: 'conversationPreview', attribute: 'textContent' },
           timestamp: { childSelector: 'conversationTime', attribute: 'textContent' },
-          unread: { childSelector: 'conversationUnread', attribute: 'exists' }
+          unread: { childSelector: 'conversationUnread', attribute: 'exists' },
+          // threadUrl powers the result-panel action buttons (Star / Move /
+          // Draft Reply jump straight to the thread). Extracted from the
+          // anchor inside each conversation card.
+          threadUrl: { childSelector: 'conversationLink', attribute: 'href' }
         }
       },
       { action: 'setVar', var: 'processedCount', value: '$conversations.length' },
@@ -716,7 +720,15 @@ export const DEFAULT_PLAYBOOKS = {
         action: 'prompt',
         var: 'userAction',
         title: 'Inbox Analysis',
-        body: '$classification',
+        // The panel detects this shape and renders rich rows with per-item
+        // action buttons (Star / Move to Other / Draft Reply). It joins
+        // classification items back to threadUrls via name match against
+        // $conversations.
+        body: {
+          __type: 'inbox-analysis-result',
+          classification: '$classification',
+          conversations: '$conversations'
+        },
         options: ['Done']
       }
     ]
