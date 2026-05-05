@@ -26,11 +26,35 @@ export function delay(ms) {
  * @returns {boolean} True if click was executed
  */
 export function click(element) {
-  if (element && typeof element.click === 'function' && document.contains(element)) {
-    element.click();
-    return true;
+  if (!element || !document.contains(element)) return false;
+  // Native element.click() only dispatches a 'click' event. React-driven
+  // dropdown menu items (e.g. LinkedIn's overflow LI items) often listen
+  // for the full pointer/mouse sequence via root delegation; without
+  // mousedown+mouseup the menu stays open and the action no-ops.
+  // Dispatch a full sequence with realistic coords so React intercepts.
+  const rect = element.getBoundingClientRect();
+  const x = rect.left + rect.width / 2;
+  const y = rect.top + rect.height / 2;
+  const opts = { bubbles: true, cancelable: true, view: window, clientX: x, clientY: y, button: 0 };
+  try {
+    element.dispatchEvent(new PointerEvent('pointerdown', { ...opts, pointerType: 'mouse' }));
+  } catch { /* PointerEvent unsupported in some envs — skip */ }
+  element.dispatchEvent(new MouseEvent('mousedown', opts));
+  try {
+    element.dispatchEvent(new PointerEvent('pointerup', { ...opts, pointerType: 'mouse' }));
+  } catch { /* skip */ }
+  element.dispatchEvent(new MouseEvent('mouseup', opts));
+  // Final click — also fires the handler bound directly via element.onclick
+  // or via the native click() path. Fall back to element.click() if
+  // dispatchEvent didn't produce a click (some elements are special).
+  const dispatched = element.dispatchEvent(new MouseEvent('click', opts));
+  if (dispatched && typeof element.click === 'function') {
+    // dispatchEvent fired but for completeness also call the native click
+    // so anchors / submit buttons still navigate. No double-fire risk for
+    // React handlers because they listen on synthetic events at the root.
+    try { element.click(); } catch { /* ignore */ }
   }
-  return false;
+  return true;
 }
 
 /**
