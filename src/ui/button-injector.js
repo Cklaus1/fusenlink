@@ -98,12 +98,12 @@ function getOrCreateStack() {
   if (stack) return stack;
   stack = document.createElement('div');
   stack.id = 'li-bulk-button-stack';
-  // Bug 32: on /feed/ LinkedIn's compose widget occupies top-right; mirror to top-left
-  const onFeed = window.location.pathname.startsWith('/feed');
+  // Always top-left so buttons land in a consistent location across pages
+  // and don't overlap LinkedIn's right-side widgets (compose, ads, etc.).
   Object.assign(stack.style, {
     position: 'fixed',
     top: '80px',
-    [onFeed ? 'left' : 'right']: '20px',
+    left: '20px',
     zIndex: '1000',
     display: 'flex',
     flexDirection: 'column',

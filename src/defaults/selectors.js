@@ -532,7 +532,7 @@ export const DEFAULT_SELECTOR_REGISTRIES = {
   },
 
   'linkedin.messaging': {
-    version: 6,
+    version: 7,
     // Anchor inside each conversation list item that links to the thread page.
     // Used by inbox-analysis → draft-reply hand-off (grab thread URLs to navigate).
     conversationLink: {
@@ -660,27 +660,32 @@ export const DEFAULT_SELECTOR_REGISTRIES = {
     // Dropdown menu items — text-based, scoped to dropdown content. The exact
     // label flips with the current folder ("Move to Other" in Focused view,
     // "Move to Focused" in Other view), so we register both.
+    // Dropdown menu items are wrapped in <li> but the actual click target is
+    // an inner <div role="button" class="msg-thread-actions__dropdown-option">.
+    // Native click on the LI doesn't propagate to the React handler; we have to
+    // target the role=button div directly. The label flips with current folder
+    // ("Move to Other" in Focused view, "Move to Focused" in Other view).
     menuItemMoveToOther: {
       strategies: [
-        { type: 'cssWithText', value: '.artdeco-dropdown__content li', text: 'Move to Other' },
-        { type: 'cssWithText', value: '[role="menuitem"]', text: 'Move to Other' },
-        { type: 'textExact', value: 'li', text: 'Move to Other' }
+        { type: 'cssWithText', value: '[role="button"].msg-thread-actions__dropdown-option', text: 'Move to Other' },
+        { type: 'cssWithText', value: '.artdeco-dropdown__content [role="button"]', text: 'Move to Other' },
+        { type: 'cssWithText', value: '.artdeco-dropdown__content li', text: 'Move to Other' }
       ],
       filters: ['visible']
     },
     menuItemMoveToFocused: {
       strategies: [
-        { type: 'cssWithText', value: '.artdeco-dropdown__content li', text: 'Move to Focused' },
-        { type: 'cssWithText', value: '[role="menuitem"]', text: 'Move to Focused' },
-        { type: 'textExact', value: 'li', text: 'Move to Focused' }
+        { type: 'cssWithText', value: '[role="button"].msg-thread-actions__dropdown-option', text: 'Move to Focused' },
+        { type: 'cssWithText', value: '.artdeco-dropdown__content [role="button"]', text: 'Move to Focused' },
+        { type: 'cssWithText', value: '.artdeco-dropdown__content li', text: 'Move to Focused' }
       ],
       filters: ['visible']
     },
     menuItemArchive: {
       strategies: [
-        { type: 'cssWithText', value: '.artdeco-dropdown__content li', text: 'Archive' },
-        { type: 'cssWithText', value: '[role="menuitem"]', text: 'Archive' },
-        { type: 'textExact', value: 'li', text: 'Archive' }
+        { type: 'cssWithText', value: '[role="button"].msg-thread-actions__dropdown-option', text: 'Archive' },
+        { type: 'cssWithText', value: '.artdeco-dropdown__content [role="button"]', text: 'Archive' },
+        { type: 'cssWithText', value: '.artdeco-dropdown__content li', text: 'Archive' }
       ],
       filters: ['visible']
     }
