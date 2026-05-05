@@ -1,9 +1,16 @@
 /**
  * JSON-backed adapter that mimics chrome.storage.local for Node.
  *
- * Stored at ~/.fusenlink/state.json. All reads come from an in-memory cache
- * loaded once at startup; writes flush synchronously to disk and notify
- * onChanged subscribers (so ai-client's cache invalidation listener works).
+ * Stored at ~/.fusenlink/state.json. To stay safe across multiple
+ * concurrent processes (e.g. the persistent `attach` shell + a one-shot
+ * `run` CLI invocation, or two `update-ai-config` scripts), every read
+ * and write rebuilds the in-memory cache from disk first. This avoids
+ * the previous bug where a long-lived process loaded the file once at
+ * startup and later flushed its stale cache, clobbering keys other
+ * processes had written in the meantime.
+ *
+ * Cost: a small synchronous JSON read per operation. The file is small
+ * and operations are infrequent, so this is fine in practice.
  */
 
 import { promises as fs } from 'node:fs';
@@ -40,6 +47,7 @@ function flushToDisk() {
   writeFileSync(STATE_FILE, JSON.stringify(cache, null, 2));
 }
 
+// Initial load (kept for parity with previous behavior; every op also reloads).
 loadFromDisk();
 
 function normalizeKeys(keys) {
@@ -60,6 +68,7 @@ function notify(changes) {
 export const storageApi = {
   local: {
     get(keys, cb) {
+      loadFromDisk();
       const list = normalizeKeys(keys);
       const out = {};
       for (const k of list) {
@@ -74,6 +83,9 @@ export const storageApi = {
       queueMicrotask(() => cb && cb(out));
     },
     set(items, cb) {
+      // Re-read first so we merge into the latest on-disk state instead of
+      // clobbering keys other processes wrote since our last load.
+      loadFromDisk();
       const changes = {};
       for (const [k, v] of Object.entries(items)) {
         changes[k] = { oldValue: cache[k], newValue: v };
@@ -84,6 +96,7 @@ export const storageApi = {
       queueMicrotask(() => cb && cb());
     },
     remove(keys, cb) {
+      loadFromDisk();
       const list = normalizeKeys(keys);
       const changes = {};
       for (const k of list) {
@@ -97,6 +110,7 @@ export const storageApi = {
       queueMicrotask(() => cb && cb());
     },
     clear(cb) {
+      loadFromDisk();
       const changes = {};
       for (const k of Object.keys(cache)) {
         changes[k] = { oldValue: cache[k], newValue: undefined };
