@@ -502,11 +502,50 @@ async function fetchAnthropic(config, messages, body) {
  */
 function tryParseJSON(content) {
   if (!content) return undefined;
-  const trimmed = content.trim();
-  if (!trimmed.startsWith('{') && !trimmed.startsWith('[')) return undefined;
-  try {
-    return JSON.parse(trimmed);
-  } catch {
-    return undefined;
+  let s = content.trim();
+
+  // Strip markdown code fences. Qwen-Coder and other models often wrap JSON
+  // in ```json ... ``` even when asked for raw JSON.
+  const fenced = /^```(?:json|JSON)?\s*\n?([\s\S]*?)\n?```\s*$/m;
+  const m = fenced.exec(s);
+  if (m) s = m[1].trim();
+
+  if (s.startsWith('{') || s.startsWith('[')) {
+    try { return JSON.parse(s); } catch { /* fall through */ }
   }
+
+  // Last-ditch: pull the first balanced {...} or [...] block out of mixed prose.
+  const obj = extractBalanced(s, '{', '}');
+  if (obj) {
+    try { return JSON.parse(obj); } catch { /* ignore */ }
+  }
+  const arr = extractBalanced(s, '[', ']');
+  if (arr) {
+    try { return JSON.parse(arr); } catch { /* ignore */ }
+  }
+  return undefined;
+}
+
+function extractBalanced(s, open, close) {
+  const start = s.indexOf(open);
+  if (start < 0) return null;
+  let depth = 0;
+  let inStr = false;
+  let esc = false;
+  for (let i = start; i < s.length; i++) {
+    const c = s[i];
+    if (inStr) {
+      if (esc) esc = false;
+      else if (c === '\\') esc = true;
+      else if (c === '"') inStr = false;
+      continue;
+    }
+    if (c === '"') { inStr = true; continue; }
+    if (c === open) depth++;
+    else if (c === close) {
+      depth--;
+      if (depth === 0) return s.slice(start, i + 1);
+    }
+  }
+  return null;
 }
