@@ -673,7 +673,7 @@ export const DEFAULT_PLAYBOOKS = {
 
   'inbox-analysis': {
     id: 'inbox-analysis',
-    version: 2,
+    version: 3,
     name: 'Analyze Inbox',
     description: 'AI classifies and prioritizes your LinkedIn inbox',
     urlPattern: 'linkedin\\.com/messaging/',
@@ -801,7 +801,7 @@ export const DEFAULT_PLAYBOOKS = {
 
   'draft-reply': {
     id: 'draft-reply',
-    version: 1,
+    version: 2,
     name: 'Draft Reply',
     description: 'AI drafts a reply for the open thread; user reviews before sending',
     // Only inject on an open thread, not the inbox root.
