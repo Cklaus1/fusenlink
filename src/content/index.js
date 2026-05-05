@@ -33,6 +33,10 @@ async function initialize() {
   // inbox-analysis result panel to hand off to per-thread playbooks).
   setTimeout(checkAutoRunParam, 1500);
 
+  // Resume any in-flight bulk queue (e.g. user clicked "Star All" earlier
+  // and we landed on /messaging/ between thread visits).
+  setTimeout(resumeBulkQueueIfPending, 2000);
+
   // Watch for URL changes (LinkedIn SPA navigation)
   startWatching((newUrl) => {
     // Small delay to let LinkedIn render
@@ -214,6 +218,9 @@ async function runPlaybook(playbookId) {
 
   try {
     const result = await currentEngine.run();
+    // After completion, if there's a pending bulk queue and this run was the
+    // current bulk item, advance to the next one.
+    advanceBulkQueue(playbookId).catch(err => console.warn('bulk queue advance failed:', err));
     return result;
   } catch (err) {
     console.error('ContentBridge: playbook error', err);
@@ -221,6 +228,86 @@ async function runPlaybook(playbookId) {
   } finally {
     currentEngine = null;
   }
+}
+
+/**
+ * Bulk-action queue: when the inbox-analysis result panel kicks off a
+ * "Star All" or "Move all to Other" over multiple conversations, it stores
+ * { playbookId, names, index } in chrome.storage.local under 'pendingBulk'.
+ * After each playbook completion, this advances the queue: navigates to the
+ * next conversation by clicking its inbox-sidebar card, then re-runs the
+ * playbook with ?__fl-run=. When the queue is empty, clears the storage
+ * entry and shows a brief overlay summary.
+ */
+async function advanceBulkQueue(justRanPlaybookId) {
+  const { pendingBulk } = await new Promise((resolve) =>
+    chrome.storage.local.get(['pendingBulk'], resolve)
+  );
+  if (!pendingBulk || pendingBulk.playbookId !== justRanPlaybookId) return;
+  // The just-completed run was at pendingBulk.index. Bump to next.
+  const nextIndex = (pendingBulk.index || 0) + 1;
+  if (nextIndex >= (pendingBulk.names || []).length) {
+    // Done — clean up.
+    await new Promise((resolve) => chrome.storage.local.remove(['pendingBulk'], resolve));
+    console.log(`[bulk] complete: ${pendingBulk.names.length} conversations`);
+    return;
+  }
+  const updated = { ...pendingBulk, index: nextIndex };
+  await new Promise((resolve) => chrome.storage.local.set({ pendingBulk: updated }, resolve));
+
+  // Navigate to /messaging/ root briefly to ensure the inbox sidebar is
+  // visible (we need it to find the next conversation card). After that we
+  // poll for the card and click it.
+  const targetName = pendingBulk.names[nextIndex];
+  console.log(`[bulk] ${nextIndex + 1}/${pendingBulk.names.length} → ${targetName}`);
+  await navigateToInboxAndRunNext(targetName, pendingBulk.playbookId);
+}
+
+async function navigateToInboxAndRunNext(targetName, playbookId) {
+  // If we're already on a thread page, the sidebar should still be present.
+  // Just look for the card by name and click it.
+  const items = Array.from(document.querySelectorAll('li.msg-conversation-listitem'));
+  const target = String(targetName || '').trim().toLowerCase();
+  let card = items.find((it) => {
+    const n = it.querySelector('.msg-conversation-listitem__participant-names')?.textContent || '';
+    return n.trim().toLowerCase() === target;
+  });
+  // If not found on this page, navigate to inbox root and try again after load.
+  if (!card) {
+    window.location.href = `https://www.linkedin.com/messaging/`;
+    return; // page-load handler will retry once the sidebar is up
+  }
+  const link = card.querySelector('.msg-conversation-listitem__link') || card;
+  const before = location.href;
+  link.click();
+  // Poll for URL change.
+  const started = Date.now();
+  while (Date.now() - started < 3000) {
+    if (location.href !== before && /\/messaging\/thread\//.test(location.href)) break;
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  const u = new URL(location.href);
+  u.searchParams.set('__fl-run', playbookId);
+  window.location.href = u.toString();
+}
+
+/**
+ * On every page boot, if a bulk queue is pending and the current page is
+ * the inbox root (no thread open), advance to the current item. This
+ * handles the case where the queue's first or any next-item navigation
+ * lands us back at /messaging/.
+ */
+async function resumeBulkQueueIfPending() {
+  const { pendingBulk } = await new Promise((resolve) =>
+    chrome.storage.local.get(['pendingBulk'], resolve)
+  );
+  if (!pendingBulk || !pendingBulk.names || pendingBulk.index >= pendingBulk.names.length) return;
+  if (/\/messaging\/thread\//.test(location.href) && new URLSearchParams(location.search).get('__fl-run')) return;
+  // Not on a thread or no auto-run param yet — give the sidebar a moment, then click.
+  setTimeout(() => {
+    navigateToInboxAndRunNext(pendingBulk.names[pendingBulk.index], pendingBulk.playbookId)
+      .catch(err => console.warn('bulk resume failed:', err));
+  }, 2500);
 }
 
 /**

@@ -175,20 +175,65 @@ function renderInboxResult(body) {
     { key: 'spam', label: 'Spam', actions: ['move'] }
   ];
 
-  for (const sec of sections) {
+  // Bulk actions per section. The first action in `bulk` (if any) renders as
+  // a small button next to the section heading and runs that playbook for
+  // every item in the section sequentially via a chrome.storage queue.
+  const sectionsWithBulk = sections.map((s) => {
+    if (s.key === 'highPriority') return { ...s, bulk: { action: 'star', label: '⭐ Star All' } };
+    if (s.key === 'lowPriority') return { ...s, bulk: { action: 'move', label: '📦 Move all to Other' } };
+    if (s.key === 'spam') return { ...s, bulk: { action: 'move', label: '📦 Move all to Other' } };
+    return s;
+  });
+
+  for (const sec of sectionsWithBulk) {
     const items = classification[sec.key] || [];
     if (!Array.isArray(items) || items.length === 0) continue;
 
+    // Heading row: label + bulk button (right-aligned)
+    const headerRow = document.createElement('div');
+    Object.assign(headerRow.style, {
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      margin: '14px 0 6px 0'
+    });
     const h = document.createElement('h4');
     h.textContent = `${sec.label} (${items.length})`;
     Object.assign(h.style, {
-      margin: '14px 0 6px 0',
+      margin: '0',
       fontSize: '13px',
       color: '#666',
       textTransform: 'uppercase',
       letterSpacing: '0.5px'
     });
-    wrap.appendChild(h);
+    headerRow.appendChild(h);
+
+    if (sec.bulk) {
+      const playbookId = sec.bulk.action === 'star' ? 'star-thread'
+        : sec.bulk.action === 'move' ? 'mark-as-other'
+        : null;
+      if (playbookId) {
+        const bulkBtn = document.createElement('button');
+        bulkBtn.textContent = sec.bulk.label;
+        Object.assign(bulkBtn.style, {
+          padding: '4px 10px',
+          borderRadius: '14px',
+          border: '1px solid #d0d0d0',
+          background: 'white',
+          color: '#0a66c2',
+          fontSize: '11px',
+          fontWeight: '600',
+          cursor: 'pointer',
+          whiteSpace: 'nowrap'
+        });
+        bulkBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          startBulk(items.map((it) => it.name), playbookId, sec.label);
+        });
+        headerRow.appendChild(bulkBtn);
+      }
+    }
+    wrap.appendChild(headerRow);
 
     for (const item of items) {
       wrap.appendChild(renderItemRow(item, lookup(item.name), sec.actions));
@@ -234,9 +279,12 @@ function renderItemRow(item, conv, actions) {
   const btns = document.createElement('div');
   Object.assign(btns.style, { display: 'flex', gap: '6px', flexShrink: '0' });
 
-  const url = conv && conv.threadUrl ? conv.threadUrl : null;
-  // The first action in the array is the recommended one — render it filled
-  // (primary). Subsequent actions render as outlined ghost buttons.
+  // The first action is the recommended one — render filled-blue (primary);
+  // others are outlined ghost buttons. Buttons no longer depend on a pre-
+  // extracted threadUrl: at click time we look the conversation card up by
+  // name on the page, click it (LinkedIn updates location.href), then
+  // navigate with ?__fl-run=<id>. Robust against the conversation cards
+  // being divs without href (the 2026 lite UI).
   const mkBtn = (label, playbookId, title, primary) => {
     const b = document.createElement('button');
     b.textContent = label;
@@ -245,20 +293,17 @@ function renderItemRow(item, conv, actions) {
       padding: '5px 12px',
       borderRadius: '14px',
       border: primary ? '1px solid #0a66c2' : '1px solid #d0d0d0',
-      cursor: url ? 'pointer' : 'not-allowed',
+      cursor: 'pointer',
       fontSize: '12px',
       fontWeight: primary ? '600' : '500',
       background: primary ? '#0a66c2' : 'white',
       color: primary ? 'white' : '#444',
       whiteSpace: 'nowrap',
-      opacity: url ? '1' : '0.4',
       transition: 'background-color 0.15s, transform 0.05s'
     });
-    b.disabled = !url;
     b.addEventListener('click', (e) => {
       e.stopPropagation();
-      if (!url) return;
-      navigateAndRun(url, playbookId);
+      runActionByName(item.name, playbookId);
     });
     return b;
   };
@@ -349,22 +394,64 @@ function renderDraftReply(body) {
 }
 
 /**
- * Navigate to a thread URL with a query param that the thread-page bundle
- * picks up on init to auto-fire the named playbook. Param is named
- * `__fl-run` (double underscore) to avoid colliding with any LinkedIn-side
- * params; the thread-page bundle parses it, dispatches RUN_PLAYBOOK, and
- * scrubs the param from the URL so a manual reload doesn't re-fire.
+ * Find a conversation card in the inbox sidebar by participant name, click
+ * its inner link to make LinkedIn navigate to that thread, then once the URL
+ * has updated re-navigate with ?__fl-run=<playbookId> so the thread-page
+ * bundle auto-fires the playbook on init.
+ *
+ * Conversation cards in the 2026 lite UI are <div>s without an href, so we
+ * can't extract a thread URL up front — clicking the card and reading
+ * location.href afterwards is the most reliable way to derive it.
  */
-function navigateAndRun(url, playbookId) {
-  try {
-    const u = new URL(url, location.origin);
-    u.searchParams.set('__fl-run', playbookId);
-    window.location.href = u.toString();
-  } catch {
-    // URL parsing failed (relative href edge case) — fall back to plain nav
-    const sep = url.includes('?') ? '&' : '?';
-    window.location.href = `${url}${sep}__fl-run=${encodeURIComponent(playbookId)}`;
+async function runActionByName(name, playbookId) {
+  const target = String(name || '').trim().toLowerCase();
+  const items = Array.from(document.querySelectorAll('li.msg-conversation-listitem'));
+  const card = items.find((it) => {
+    const n = it.querySelector('.msg-conversation-listitem__participant-names')?.textContent || '';
+    return n.trim().toLowerCase() === target;
+  });
+  if (!card) {
+    console.warn(`AIPanel: no conversation card found for "${name}"`);
+    return;
   }
+  const link = card.querySelector('.msg-conversation-listitem__link') || card;
+  const before = location.href;
+  link.click();
+  // Poll for URL change up to 3s, then navigate with the param.
+  const started = Date.now();
+  while (Date.now() - started < 3000) {
+    if (location.href !== before && /\/messaging\/thread\//.test(location.href)) break;
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  const u = new URL(location.href);
+  u.searchParams.set('__fl-run', playbookId);
+  window.location.href = u.toString();
+}
+
+/**
+ * Kick off a bulk action over a list of conversation names. Stores the
+ * queue in chrome.storage.local so it survives page navigations; the
+ * thread-page bundle pops the next item after each playbook completes
+ * (see src/content/index.js advanceBulkQueue).
+ */
+async function startBulk(names, playbookId, sectionLabel) {
+  if (!names || names.length === 0) return;
+  const proceed = window.confirm(
+    `Run "${playbookId}" on ${names.length} ${sectionLabel.toLowerCase()} conversation${names.length === 1 ? '' : 's'}?\n\nThis will visit each thread sequentially.`
+  );
+  if (!proceed) return;
+  await new Promise((resolve) => {
+    chrome.storage.local.set({
+      'pendingBulk': {
+        playbookId,
+        names: names.slice(),
+        index: 0,
+        startedAt: new Date().toISOString()
+      }
+    }, resolve);
+  });
+  // Kick off the first item.
+  runActionByName(names[0], playbookId);
 }
 
 /**
