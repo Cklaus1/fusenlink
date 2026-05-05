@@ -460,11 +460,9 @@ export function resolveValue(value, vars = {}) {
   if (typeof value !== 'string') return value;
   if (!value.startsWith('$')) return value;
 
-  const path = value.slice(1).split('.').filter(Boolean);
-  let current = vars;
-  for (const part of path) {
-    if (current == null) return undefined;
-    current = current[part];
-  }
-  return current;
+  // Defer to the full expression evaluator so paths with array indexing
+  // (`$drafts.options[0].text`) and member chains both resolve correctly.
+  // For a plain `$foo.bar` path the parser walks the same chain a manual
+  // dot-split would, so this is a strict superset of the previous logic.
+  return evaluate(value, vars);
 }
