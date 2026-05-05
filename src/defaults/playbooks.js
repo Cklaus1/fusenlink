@@ -736,13 +736,17 @@ export const DEFAULT_PLAYBOOKS = {
 
   'star-thread': {
     id: 'star-thread',
-    version: 1,
+    version: 2,
     name: 'Star Thread',
     description: 'Toggle the star on the open conversation',
     urlPattern: 'linkedin\\.com/messaging/thread/',
     selectors: 'linkedin.messaging',
     buttonLabel: 'Star',
-    trustLevel: 'review',
+    // The user clicked the in-page Star button -- that IS the approval.
+    // No AI involved, no batch operation, no destructive consequence
+    // (star is reversible by clicking again). Re-prompting via review
+    // mode would just be friction. Auto.
+    trustLevel: 'auto',
     settings: {},
     steps: [
       { action: 'find', selector: 'starThreadButton', var: 'btn' },
@@ -754,19 +758,26 @@ export const DEFAULT_PLAYBOOKS = {
 
   'mark-as-other': {
     id: 'mark-as-other',
-    version: 1,
+    version: 2,
     name: 'Move to Other',
     description: 'Move the open conversation to the Other inbox (or back to Focused if already in Other)',
     urlPattern: 'linkedin\\.com/messaging/thread/',
     selectors: 'linkedin.messaging',
     buttonLabel: 'Move to Other',
-    trustLevel: 'review',
+    // User clicked the Move-to-Other button explicitly -- that's the
+    // approval. Move is reversible (we can move back to Focused). Auto.
+    trustLevel: 'auto',
     settings: {},
     steps: [
+      { action: 'log', message: 'Opening overflow menu...' },
+
       // Open the overflow ("...") menu in the thread header.
       { action: 'find', selector: 'threadOverflowButton', var: 'overflow' },
       { action: 'click', element: '$overflow' },
-      { action: 'wait', ms: 400 },
+      // Generous wait for the menu animation and React mount of menu items.
+      // The 400ms we had before raced the animation on slower machines.
+      { action: 'wait', ms: 1200 },
+      { action: 'log', message: 'Looking for Move-to-Other...' },
 
       // The label flips depending on current folder. Try Move-to-Other first;
       // if not present (we're already in Other), fall back to Move-to-Focused.
@@ -775,7 +786,9 @@ export const DEFAULT_PLAYBOOKS = {
         action: 'conditional',
         condition: '$moveOther',
         onTrue: [
+          { action: 'log', message: 'Found Move-to-Other; clicking.' },
           { action: 'click', element: '$moveOther' },
+          { action: 'wait', ms: 600 },
           { action: 'setVar', var: 'processedCount', value: 1 },
           { action: 'log', message: 'Moved to Other.' }
         ],
@@ -785,7 +798,9 @@ export const DEFAULT_PLAYBOOKS = {
             action: 'conditional',
             condition: '$moveFocused',
             onTrue: [
+              { action: 'log', message: 'Found Move-to-Focused; clicking.' },
               { action: 'click', element: '$moveFocused' },
+              { action: 'wait', ms: 600 },
               { action: 'setVar', var: 'processedCount', value: 1 },
               { action: 'log', message: 'Moved to Focused.' }
             ],
@@ -801,14 +816,17 @@ export const DEFAULT_PLAYBOOKS = {
 
   'draft-reply': {
     id: 'draft-reply',
-    version: 2,
+    version: 3,
     name: 'Draft Reply',
     description: 'AI drafts a reply for the open thread; user reviews before sending',
     // Only inject on an open thread, not the inbox root.
     urlPattern: 'linkedin\\.com/messaging/thread/',
     selectors: 'linkedin.messaging',
     buttonLabel: 'Draft Reply',
-    trustLevel: 'review',
+    // The Send #1 / Send #2 prompt step itself is the user's review of the
+    // AI drafts -- picking an option is the approval. Re-prompting on the
+    // subsequent typeText/click via review mode would just be friction.
+    trustLevel: 'auto',
     settings: { requiresAI: true },
     steps: [
       { action: 'log', message: 'Reading thread messages...' },
