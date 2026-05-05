@@ -33,7 +33,15 @@ chrome.storage.onChanged.addListener((changes, area) => {
 
 /**
  * Validate that a baseUrl is a well-formed HTTP(S) URL.
- * Localhost (for Ollama/vLLM) is allowed over HTTP; all others require HTTPS.
+ *
+ * HTTPS is allowed unconditionally. HTTP is allowed for trusted local /
+ * private network destinations:
+ *   - loopback: localhost, 127.0.0.1, ::1
+ *   - RFC 1918 private: 10/8, 172.16/12, 192.168/16
+ *   - Tailscale CGNAT: 100.64.0.0/10
+ *   - Tailscale MagicDNS: *.ts.net
+ *   - Bare hostnames (no dots): mDNS / LAN / tailnet shortnames like 'gpumaster'
+ *
  * @param {string} url
  * @returns {boolean}
  */
@@ -41,7 +49,15 @@ function isValidBaseUrl(url) {
   try {
     const parsed = new URL(url);
     if (parsed.protocol === 'https:') return true;
-    if (parsed.protocol === 'http:' && (parsed.hostname === 'localhost' || parsed.hostname === '127.0.0.1')) return true;
+    if (parsed.protocol !== 'http:') return false;
+    const h = parsed.hostname.toLowerCase();
+    if (h === 'localhost' || h === '127.0.0.1' || h === '[::1]' || h === '::1') return true;
+    if (/^10\./.test(h)) return true;
+    if (/^192\.168\./.test(h)) return true;
+    if (/^172\.(1[6-9]|2\d|3[01])\./.test(h)) return true;
+    if (/^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./.test(h)) return true;
+    if (/\.ts\.net$/.test(h)) return true;
+    if (!h.includes('.')) return true; // bare hostname
     return false;
   } catch {
     return false;
@@ -263,12 +279,31 @@ function extractProviderErrorMessage(data) {
 /**
  * Fetch from OpenAI-compatible endpoint.
  */
-const FETCH_TIMEOUT_MS = 30000;
+// 120s default — accommodates "thinking" substitute models (Qwen3.x, etc.) that
+// emit chain-of-thought before the final answer. Reduce for fast cloud APIs
+// via env: FUSENLINK_FETCH_TIMEOUT_MS
+const FETCH_TIMEOUT_MS = parseInt(
+  (typeof process !== 'undefined' ? process.env?.FUSENLINK_FETCH_TIMEOUT_MS : '') || '120000',
+  10
+);
 
 async function fetchOpenAICompat(config, body) {
   const headers = { 'Content-Type': 'application/json' };
   if (config.apiKey) {
     headers['Authorization'] = `Bearer ${config.apiKey}`;
+  }
+
+  // Inject prependSystem into the first system message if configured
+  const prepend = (config.prependSystem || '').trim();
+  if (prepend && Array.isArray(body.messages)) {
+    const sysIdx = body.messages.findIndex(m => m.role === 'system');
+    if (sysIdx >= 0) {
+      const orig = body.messages[sysIdx].content || '';
+      body = { ...body, messages: [...body.messages] };
+      body.messages[sysIdx] = { ...body.messages[sysIdx], content: orig ? `${prepend}\n\n${orig}` : prepend };
+    } else {
+      body = { ...body, messages: [{ role: 'system', content: prepend }, ...body.messages] };
+    }
   }
 
   // Bug 18: Register controller tagged with provider/baseUrl so saveConfig() only
@@ -347,10 +382,18 @@ async function fetchAnthropic(config, messages, body) {
   const systemMsg = messages.find(m => m.role === 'system');
   const userMessages = messages.filter(m => m.role !== 'system');
 
+  // Compose final system prompt with optional prepend (e.g., '/no_think' for
+  // Qwen-class substitute models behind a proxy)
+  const prepend = (config.prependSystem || '').trim();
+  const baseSystem = systemMsg?.content || '';
+  const composedSystem = prepend
+    ? (baseSystem ? `${prepend}\n\n${baseSystem}` : prepend)
+    : baseSystem;
+
   const anthropicBody = {
     model: body.model,
     max_tokens: body.max_tokens,
-    system: systemMsg?.content || '',
+    system: composedSystem,
     messages: userMessages.map(m => ({
       role: m.role,
       content: m.content

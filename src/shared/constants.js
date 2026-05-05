@@ -29,7 +29,11 @@ export const DEFAULT_AI_CONFIG = {
   baseUrl: 'http://localhost:11434/v1',
   apiKey: '',
   model: 'llama3.1:8b',
-  maxTokens: 1024
+  maxTokens: 1024,
+  // Optional system-prompt prefix injected before every system message.
+  // Useful for chain-of-thought-suppression directives like '/no_think' on
+  // Qwen3.x-style "thinking" models behind a substitute proxy.
+  prependSystem: ''
 };
 
 export const DEFAULT_DAILY_LIMITS = {

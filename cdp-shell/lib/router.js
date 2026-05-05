@@ -71,6 +71,6 @@ export function route(message) {
         resolved = true;
         resolve({ error: 'router timeout' });
       }
-    }, 60000);
+    }, 180000);  // 3 min — accommodates AI calls to "thinking" models with retries
   });
 }
