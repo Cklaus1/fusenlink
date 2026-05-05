@@ -67,6 +67,8 @@ export function showPrompt({ title, body, options }) {
     // Rich rendering for known structured result shapes; fall back to text.
     if (body && typeof body === 'object' && body.__type === 'inbox-analysis-result') {
       panelElement.appendChild(renderInboxResult(body));
+    } else if (body && typeof body === 'object' && body.__type === 'draft-reply-result') {
+      panelElement.appendChild(renderDraftReply(body));
     } else {
       panelElement.appendChild(renderTextBody(body));
     }
@@ -264,6 +266,78 @@ function renderItemRow(item, conv, actions) {
   }
   row.appendChild(btns);
   return row;
+}
+
+/**
+ * Render the draft-reply result with two (or however many) labeled draft
+ * blocks. Each draft shows a tone badge and the body text. The user picks
+ * Send #1 / Send #2 from the bottom button row.
+ */
+function renderDraftReply(body) {
+  const drafts = (body && body.drafts && Array.isArray(body.drafts.options))
+    ? body.drafts.options
+    : [];
+  const wrap = document.createElement('div');
+  wrap.style.fontSize = '14px';
+  wrap.style.color = '#333';
+
+  if (drafts.length === 0) {
+    const empty = document.createElement('div');
+    empty.textContent = 'No drafts returned. Cancel and try again.';
+    empty.style.color = '#a00';
+    wrap.appendChild(empty);
+    return wrap;
+  }
+
+  drafts.forEach((d, i) => {
+    const card = document.createElement('div');
+    Object.assign(card.style, {
+      padding: '12px 14px',
+      marginBottom: '10px',
+      border: '1px solid #e0e0e0',
+      borderRadius: '8px',
+      background: '#fafbfc'
+    });
+
+    const header = document.createElement('div');
+    Object.assign(header.style, {
+      display: 'flex',
+      alignItems: 'center',
+      gap: '8px',
+      marginBottom: '8px'
+    });
+    const num = document.createElement('strong');
+    num.textContent = `#${i + 1}`;
+    num.style.color = '#0a66c2';
+    header.appendChild(num);
+
+    if (d.tone) {
+      const badge = document.createElement('span');
+      badge.textContent = d.tone;
+      Object.assign(badge.style, {
+        padding: '2px 8px',
+        borderRadius: '10px',
+        background: '#0a66c2',
+        color: 'white',
+        fontSize: '11px',
+        textTransform: 'uppercase',
+        letterSpacing: '0.5px'
+      });
+      header.appendChild(badge);
+    }
+    card.appendChild(header);
+
+    const text = document.createElement('div');
+    text.textContent = d.text || '(empty draft)';
+    Object.assign(text.style, {
+      lineHeight: '1.5',
+      whiteSpace: 'pre-wrap'
+    });
+    card.appendChild(text);
+    wrap.appendChild(card);
+  });
+
+  return wrap;
 }
 
 /**

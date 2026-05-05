@@ -836,14 +836,18 @@ export const DEFAULT_PLAYBOOKS = {
         input: { thread: '$thread' }
       },
 
-      // MVP: show both drafted options as text in the body, user picks 1 or 2.
-      // Future: an Edit-with-textarea variant in ai-panel.js so the user can
-      // tweak before send. For now Cancel + manual typing covers that case.
+      // The panel detects __type: 'draft-reply-result' and renders the
+      // drafts as labeled blocks instead of raw JSON. Cancel + manual typing
+      // covers the edit case for now; an inline-textarea variant is a clean
+      // follow-up.
       {
         action: 'prompt',
         var: 'choice',
         title: 'Draft Reply',
-        body: '$drafts',
+        body: {
+          __type: 'draft-reply-result',
+          drafts: '$drafts'
+        },
         options: ['Send #1', 'Send #2', 'Cancel']
       },
 
