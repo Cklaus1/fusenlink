@@ -722,6 +722,102 @@ export const DEFAULT_PLAYBOOKS = {
     ]
   },
 
+  'draft-reply': {
+    id: 'draft-reply',
+    version: 1,
+    name: 'Draft Reply',
+    description: 'AI drafts a reply for the open thread; user reviews before sending',
+    // Only inject on an open thread, not the inbox root.
+    urlPattern: 'linkedin\\.com/messaging/thread/',
+    selectors: 'linkedin.messaging',
+    buttonLabel: 'Draft Reply',
+    trustLevel: 'review',
+    settings: { requiresAI: true },
+    steps: [
+      { action: 'log', message: 'Reading thread messages...' },
+
+      // Pull every visible bubble (sender + text). Sender only appears on the
+      // first bubble of each consecutive same-sender group; the AI infers
+      // alternation from context. Threads typically render < 20 bubbles, so
+      // ~600 prompt tokens — well under the TrainLoop limit even without
+      // slicing.
+      {
+        action: 'extractAll',
+        var: 'thread',
+        containerSelector: 'messageBubble',
+        fields: {
+          sender: { childSelector: 'messageSender', attribute: 'textContent' },
+          text: { childSelector: 'messageText', attribute: 'textContent' }
+        }
+      },
+
+      { action: 'log', message: 'Drafting reply with AI...' },
+      {
+        action: 'aiCall',
+        var: 'drafts',
+        aiType: 'draft_reply',
+        input: { thread: '$thread' }
+      },
+
+      // MVP: show both drafted options as text in the body, user picks 1 or 2.
+      // Future: an Edit-with-textarea variant in ai-panel.js so the user can
+      // tweak before send. For now Cancel + manual typing covers that case.
+      {
+        action: 'prompt',
+        var: 'choice',
+        title: 'Draft Reply',
+        body: '$drafts',
+        options: ['Send #1', 'Send #2', 'Cancel']
+      },
+
+      // Each branch types the chosen draft and clicks send. We can't index
+      // into $drafts.options[N].text from a string interpolation today, so
+      // each branch uses its own typeText path — verbose but no engine work.
+      {
+        action: 'conditional',
+        condition: "$choice === 'Send #1'",
+        onTrue: [
+          { action: 'find', selector: 'messageInput', var: 'input' },
+          { action: 'click', element: '$input' },
+          { action: 'wait', ms: 200 },
+          { action: 'typeText', selector: 'messageInput', text: '$drafts.options[0].text' },
+          { action: 'wait', ms: 500 },
+          { action: 'find', selector: 'sendMessageButton', var: 'sendBtn' },
+          { action: 'click', element: '$sendBtn' },
+          { action: 'setVar', var: 'processedCount', value: 1 },
+          { action: 'log', message: 'Reply sent.' },
+          {
+            action: 'storeData',
+            collection: 'outreach',
+            data: [{ threadUrl: '$location.href', tone: '$drafts.options[0].tone',
+                     text: '$drafts.options[0].text', action: 'reply_sent' }]
+          }
+        ]
+      },
+      {
+        action: 'conditional',
+        condition: "$choice === 'Send #2'",
+        onTrue: [
+          { action: 'find', selector: 'messageInput', var: 'input' },
+          { action: 'click', element: '$input' },
+          { action: 'wait', ms: 200 },
+          { action: 'typeText', selector: 'messageInput', text: '$drafts.options[1].text' },
+          { action: 'wait', ms: 500 },
+          { action: 'find', selector: 'sendMessageButton', var: 'sendBtn' },
+          { action: 'click', element: '$sendBtn' },
+          { action: 'setVar', var: 'processedCount', value: 1 },
+          { action: 'log', message: 'Reply sent.' },
+          {
+            action: 'storeData',
+            collection: 'outreach',
+            data: [{ threadUrl: '$location.href', tone: '$drafts.options[1].tone',
+                     text: '$drafts.options[1].text', action: 'reply_sent' }]
+          }
+        ]
+      }
+    ]
+  },
+
   // ==================== MARKETING PLAYBOOKS ====================
 
   'harvest-commenters': {

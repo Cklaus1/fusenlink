@@ -532,7 +532,40 @@ export const DEFAULT_SELECTOR_REGISTRIES = {
   },
 
   'linkedin.messaging': {
-    version: 2,
+    version: 3,
+    // Anchor inside each conversation list item that links to the thread page.
+    // Used by inbox-analysis → draft-reply hand-off (grab thread URLs to navigate).
+    conversationLink: {
+      strategies: [
+        { type: 'css', value: 'a.msg-conversation-listitem__link' },
+        { type: 'css', value: '[class*="msg-conversation-listitem__link"]' },
+        { type: 'css', value: 'a[href*="/messaging/thread/"]' }
+      ]
+    },
+    // Thread-page selectors (open thread, right pane). The list-side and
+    // thread-side selectors share this registry because both views render
+    // when /messaging/ or /messaging/thread/... is open in desktop layout.
+    messageBubble: {
+      strategies: [
+        { type: 'css', value: 'li.msg-s-message-list__event' },
+        { type: 'css', value: '.msg-s-message-list__event' },
+        { type: 'css', value: '[class*="msg-s-message-list__event"]' }
+      ]
+    },
+    messageSender: {
+      strategies: [
+        // Note: only appears on the FIRST bubble of a same-sender group, so
+        // callers should walk back to the previous __name when missing.
+        { type: 'css', value: '.msg-s-message-group__name' },
+        { type: 'css', value: '[class*="message-group__name"]' }
+      ]
+    },
+    messageText: {
+      strategies: [
+        { type: 'css', value: '.msg-s-event-listitem__body' },
+        { type: 'css', value: '[class*="event-listitem__body"]' }
+      ]
+    },
     conversationItem: {
       strategies: [
         { type: 'css', value: 'li.msg-conversation-listitem' },

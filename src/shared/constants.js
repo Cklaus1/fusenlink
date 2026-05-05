@@ -45,6 +45,7 @@ export const DEFAULT_DAILY_LIMITS = {
   'bulk-connect': 3,
   'extract-contacts': 10,
   'inbox-analysis': 10,
+  'draft-reply': 30,
   'ai-profile-review': 10,
   'send-message': 25,
   'search-extract': 10,
@@ -67,6 +68,7 @@ export const PLAYBOOK_URLS = {
   'ai-profile-review': null, // works on any /in/ page
   'extract-contacts': 'https://www.linkedin.com/mynetwork/invite-connect/connections/',
   'inbox-analysis': 'https://www.linkedin.com/messaging/',
+  'draft-reply': null, // user opens the thread; button appears on /messaging/thread/...
   'send-message': null, // works on any /in/ page
   'search-extract': 'https://www.linkedin.com/search/results/people/',
   'smart-outreach': null, // meta-playbook, creates a sequence
