@@ -722,6 +722,71 @@ export const DEFAULT_PLAYBOOKS = {
     ]
   },
 
+  'star-thread': {
+    id: 'star-thread',
+    version: 1,
+    name: 'Star Thread',
+    description: 'Toggle the star on the open conversation',
+    urlPattern: 'linkedin\\.com/messaging/thread/',
+    selectors: 'linkedin.messaging',
+    buttonLabel: 'Star',
+    trustLevel: 'review',
+    settings: {},
+    steps: [
+      { action: 'find', selector: 'starThreadButton', var: 'btn' },
+      { action: 'click', element: '$btn' },
+      { action: 'setVar', var: 'processedCount', value: 1 },
+      { action: 'log', message: 'Star toggled.' }
+    ]
+  },
+
+  'mark-as-other': {
+    id: 'mark-as-other',
+    version: 1,
+    name: 'Move to Other',
+    description: 'Move the open conversation to the Other inbox (or back to Focused if already in Other)',
+    urlPattern: 'linkedin\\.com/messaging/thread/',
+    selectors: 'linkedin.messaging',
+    buttonLabel: 'Move to Other',
+    trustLevel: 'review',
+    settings: {},
+    steps: [
+      // Open the overflow ("...") menu in the thread header.
+      { action: 'find', selector: 'threadOverflowButton', var: 'overflow' },
+      { action: 'click', element: '$overflow' },
+      { action: 'wait', ms: 400 },
+
+      // The label flips depending on current folder. Try Move-to-Other first;
+      // if not present (we're already in Other), fall back to Move-to-Focused.
+      { action: 'find', selector: 'menuItemMoveToOther', var: 'moveOther' },
+      {
+        action: 'conditional',
+        condition: '$moveOther',
+        onTrue: [
+          { action: 'click', element: '$moveOther' },
+          { action: 'setVar', var: 'processedCount', value: 1 },
+          { action: 'log', message: 'Moved to Other.' }
+        ],
+        onFalse: [
+          { action: 'find', selector: 'menuItemMoveToFocused', var: 'moveFocused' },
+          {
+            action: 'conditional',
+            condition: '$moveFocused',
+            onTrue: [
+              { action: 'click', element: '$moveFocused' },
+              { action: 'setVar', var: 'processedCount', value: 1 },
+              { action: 'log', message: 'Moved to Focused.' }
+            ],
+            onFalse: [
+              { action: 'dismissDropdown' },
+              { action: 'log', message: 'No Move-to action available on this thread.' }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+
   'draft-reply': {
     id: 'draft-reply',
     version: 1,

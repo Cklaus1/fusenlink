@@ -46,6 +46,8 @@ export const DEFAULT_DAILY_LIMITS = {
   'extract-contacts': 10,
   'inbox-analysis': 10,
   'draft-reply': 30,
+  'star-thread': 50,
+  'mark-as-other': 50,
   'ai-profile-review': 10,
   'send-message': 25,
   'search-extract': 10,
@@ -69,6 +71,8 @@ export const PLAYBOOK_URLS = {
   'extract-contacts': 'https://www.linkedin.com/mynetwork/invite-connect/connections/',
   'inbox-analysis': 'https://www.linkedin.com/messaging/',
   'draft-reply': null, // user opens the thread; button appears on /messaging/thread/...
+  'star-thread': null, // works on any open thread
+  'mark-as-other': null, // works on any open thread
   'send-message': null, // works on any /in/ page
   'search-extract': 'https://www.linkedin.com/search/results/people/',
   'smart-outreach': null, // meta-playbook, creates a sequence

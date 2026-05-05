@@ -532,7 +532,7 @@ export const DEFAULT_SELECTOR_REGISTRIES = {
   },
 
   'linkedin.messaging': {
-    version: 3,
+    version: 4,
     // Anchor inside each conversation list item that links to the thread page.
     // Used by inbox-analysis → draft-reply hand-off (grab thread URLs to navigate).
     conversationLink: {
@@ -626,6 +626,54 @@ export const DEFAULT_SELECTOR_REGISTRIES = {
         { type: 'cssWithText', value: 'button', text: 'send' }
       ],
       filters: ['visible', 'enabled']
+    },
+    // Direct star button in the open-thread header. Toggles starred state in
+    // a single click — no menu needed. aria-label is "Star conversation" or
+    // "Unstar conversation" depending on current state.
+    starThreadButton: {
+      strategies: [
+        { type: 'css', value: '.artdeco-button[aria-label="Star conversation"]' },
+        { type: 'css', value: '.artdeco-button[aria-label="Unstar conversation"]' },
+        { type: 'css', value: '.artdeco-button[aria-label*="star" i]' }
+      ],
+      filters: ['visible', 'enabled']
+    },
+    // Overflow ("...") trigger in the open-thread header. Opens the dropdown
+    // that contains Move-to-Other / Move-to-Focused / Mute / Archive / etc.
+    threadOverflowButton: {
+      strategies: [
+        { type: 'css', value: '.msg-thread-actions .artdeco-dropdown__trigger' },
+        { type: 'css', value: '[class*="msg-thread-actions"] .artdeco-dropdown__trigger' },
+        { type: 'css', value: '.msg-thread-actions button[aria-haspopup]' }
+      ],
+      filters: ['visible', 'enabled']
+    },
+    // Dropdown menu items — text-based, scoped to dropdown content. The exact
+    // label flips with the current folder ("Move to Other" in Focused view,
+    // "Move to Focused" in Other view), so we register both.
+    menuItemMoveToOther: {
+      strategies: [
+        { type: 'cssWithText', value: '.artdeco-dropdown__content li', text: 'Move to Other' },
+        { type: 'cssWithText', value: '[role="menuitem"]', text: 'Move to Other' },
+        { type: 'textExact', value: 'li', text: 'Move to Other' }
+      ],
+      filters: ['visible']
+    },
+    menuItemMoveToFocused: {
+      strategies: [
+        { type: 'cssWithText', value: '.artdeco-dropdown__content li', text: 'Move to Focused' },
+        { type: 'cssWithText', value: '[role="menuitem"]', text: 'Move to Focused' },
+        { type: 'textExact', value: 'li', text: 'Move to Focused' }
+      ],
+      filters: ['visible']
+    },
+    menuItemArchive: {
+      strategies: [
+        { type: 'cssWithText', value: '.artdeco-dropdown__content li', text: 'Archive' },
+        { type: 'cssWithText', value: '[role="menuitem"]', text: 'Archive' },
+        { type: 'textExact', value: 'li', text: 'Archive' }
+      ],
+      filters: ['visible']
     }
   },
 
