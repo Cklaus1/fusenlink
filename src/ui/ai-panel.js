@@ -165,9 +165,13 @@ function renderInboxResult(body) {
     wrap.appendChild(digest);
   }
 
+  // Action order in each section is intentional — the FIRST action is the
+  // recommended one for that bucket and renders as a filled-blue primary
+  // button; subsequent actions render as outlined ghost buttons. The eye
+  // lands on the action the user is most likely to take.
   const sections = [
-    { key: 'highPriority', label: 'High Priority', actions: ['star', 'reply'] },
-    { key: 'lowPriority', label: 'Low Priority', actions: ['reply'] },
+    { key: 'highPriority', label: 'High Priority', actions: ['reply', 'star'] },
+    { key: 'lowPriority', label: 'Low Priority', actions: ['reply', 'star'] },
     { key: 'spam', label: 'Spam', actions: ['move'] }
   ];
 
@@ -231,20 +235,24 @@ function renderItemRow(item, conv, actions) {
   Object.assign(btns.style, { display: 'flex', gap: '6px', flexShrink: '0' });
 
   const url = conv && conv.threadUrl ? conv.threadUrl : null;
-  const mkBtn = (label, playbookId, title) => {
+  // The first action in the array is the recommended one — render it filled
+  // (primary). Subsequent actions render as outlined ghost buttons.
+  const mkBtn = (label, playbookId, title, primary) => {
     const b = document.createElement('button');
     b.textContent = label;
     b.title = title || label;
     Object.assign(b.style, {
-      padding: '4px 10px',
+      padding: '5px 12px',
       borderRadius: '14px',
-      border: '1px solid #d0d0d0',
+      border: primary ? '1px solid #0a66c2' : '1px solid #d0d0d0',
       cursor: url ? 'pointer' : 'not-allowed',
       fontSize: '12px',
-      background: 'white',
-      color: '#333',
+      fontWeight: primary ? '600' : '500',
+      background: primary ? '#0a66c2' : 'white',
+      color: primary ? 'white' : '#444',
       whiteSpace: 'nowrap',
-      opacity: url ? '1' : '0.4'
+      opacity: url ? '1' : '0.4',
+      transition: 'background-color 0.15s, transform 0.05s'
     });
     b.disabled = !url;
     b.addEventListener('click', (e) => {
@@ -256,14 +264,14 @@ function renderItemRow(item, conv, actions) {
   };
 
   const actionMap = {
-    star: () => mkBtn('⭐ Star', 'star-thread', 'Open thread + toggle star'),
-    reply: () => mkBtn('📝 Draft Reply', 'draft-reply', 'Open thread + AI-draft a reply'),
-    move: () => mkBtn('📦 Move to Other', 'mark-as-other', 'Open thread + move to Other inbox')
+    star: (primary) => mkBtn('⭐ Star', 'star-thread', 'Open thread + toggle star', primary),
+    reply: (primary) => mkBtn('📝 Reply', 'draft-reply', 'Open thread + AI-draft a reply', primary),
+    move: (primary) => mkBtn('📦 Move to Other', 'mark-as-other', 'Open thread + move to Other inbox', primary)
   };
-  for (const act of actions) {
+  actions.forEach((act, i) => {
     const make = actionMap[act];
-    if (make) btns.appendChild(make());
-  }
+    if (make) btns.appendChild(make(i === 0)); // first = primary
+  });
   row.appendChild(btns);
   return row;
 }

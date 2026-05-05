@@ -532,7 +532,7 @@ export const DEFAULT_SELECTOR_REGISTRIES = {
   },
 
   'linkedin.messaging': {
-    version: 4,
+    version: 6,
     // Anchor inside each conversation list item that links to the thread page.
     // Used by inbox-analysis → draft-reply hand-off (grab thread URLs to navigate).
     conversationLink: {
@@ -640,11 +640,20 @@ export const DEFAULT_SELECTOR_REGISTRIES = {
     },
     // Overflow ("...") trigger in the open-thread header. Opens the dropdown
     // that contains Move-to-Other / Move-to-Focused / Mute / Archive / etc.
+    // 2026 lite UI dropped aria-haspopup on this button and ditched the
+    // .msg-thread-actions container. The most stable hook is the visually-
+    // hidden screen-reader text "Open the options list in your conversation".
     threadOverflowButton: {
       strategies: [
+        // Visually-hidden screen-reader text varies by recipient, so substring-
+        // match instead of exact. Exact form is e.g.
+        // "Open the options list in your conversation with Christopher Klaus".
+        { type: 'textMatch', value: 'button', text: 'open the options list in your conversation' },
+        { type: 'css', value: 'button.msg-thread-actions__control.artdeco-dropdown__trigger' },
+        { type: 'css', value: 'button.msg-thread-actions__control[aria-haspopup]' },
+        // Legacy fallbacks
         { type: 'css', value: '.msg-thread-actions .artdeco-dropdown__trigger' },
-        { type: 'css', value: '[class*="msg-thread-actions"] .artdeco-dropdown__trigger' },
-        { type: 'css', value: '.msg-thread-actions button[aria-haspopup]' }
+        { type: 'css', value: '[class*="msg-thread-actions"] .artdeco-dropdown__trigger' }
       ],
       filters: ['visible', 'enabled']
     },
