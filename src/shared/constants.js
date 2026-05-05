@@ -30,10 +30,13 @@ export const DEFAULT_AI_CONFIG = {
   apiKey: '',
   model: 'llama3.1:8b',
   maxTokens: 1024,
-  // Optional system-prompt prefix injected before every system message.
-  // Useful for chain-of-thought-suppression directives like '/no_think' on
-  // Qwen3.x-style "thinking" models behind a substitute proxy.
-  prependSystem: ''
+  // Optional system-prompt prefix. Injected before the first system message.
+  prependSystem: '',
+  // Optional user-message prefix. Injected before the first user message.
+  // Qwen3.x honors '/no_think' as a user-side directive (it is ignored when
+  // placed in the system prompt), so this is the right slot for chain-of-
+  // thought suppression on substitute proxies that route to Qwen.
+  prependUser: ''
 };
 
 export const DEFAULT_DAILY_LIMITS = {

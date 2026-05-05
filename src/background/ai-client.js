@@ -294,15 +294,26 @@ async function fetchOpenAICompat(config, body) {
   }
 
   // Inject prependSystem into the first system message if configured
-  const prepend = (config.prependSystem || '').trim();
-  if (prepend && Array.isArray(body.messages)) {
+  const prependSys = (config.prependSystem || '').trim();
+  if (prependSys && Array.isArray(body.messages)) {
     const sysIdx = body.messages.findIndex(m => m.role === 'system');
     if (sysIdx >= 0) {
       const orig = body.messages[sysIdx].content || '';
       body = { ...body, messages: [...body.messages] };
-      body.messages[sysIdx] = { ...body.messages[sysIdx], content: orig ? `${prepend}\n\n${orig}` : prepend };
+      body.messages[sysIdx] = { ...body.messages[sysIdx], content: orig ? `${prependSys}\n\n${orig}` : prependSys };
     } else {
-      body = { ...body, messages: [{ role: 'system', content: prepend }, ...body.messages] };
+      body = { ...body, messages: [{ role: 'system', content: prependSys }, ...body.messages] };
+    }
+  }
+
+  // Inject prependUser into the first user message (e.g. '/no_think' for Qwen3)
+  const prependU = (config.prependUser || '').trim();
+  if (prependU && Array.isArray(body.messages)) {
+    const userIdx = body.messages.findIndex(m => m.role === 'user');
+    if (userIdx >= 0) {
+      const orig = body.messages[userIdx].content || '';
+      body = { ...body, messages: [...body.messages] };
+      body.messages[userIdx] = { ...body.messages[userIdx], content: orig ? `${prependU}\n\n${orig}` : prependU };
     }
   }
 
@@ -382,22 +393,33 @@ async function fetchAnthropic(config, messages, body) {
   const systemMsg = messages.find(m => m.role === 'system');
   const userMessages = messages.filter(m => m.role !== 'system');
 
-  // Compose final system prompt with optional prepend (e.g., '/no_think' for
-  // Qwen-class substitute models behind a proxy)
-  const prepend = (config.prependSystem || '').trim();
+  // Compose final system prompt with optional prepend
+  const prependSys = (config.prependSystem || '').trim();
   const baseSystem = systemMsg?.content || '';
-  const composedSystem = prepend
-    ? (baseSystem ? `${prepend}\n\n${baseSystem}` : prepend)
+  const composedSystem = prependSys
+    ? (baseSystem ? `${prependSys}\n\n${baseSystem}` : prependSys)
     : baseSystem;
+
+  // Inject prependUser before the first user message (e.g. '/no_think' for
+  // Qwen3-class models — they ignore /no_think in the system prompt)
+  const prependU = (config.prependUser || '').trim();
+  const adaptedMessages = userMessages.map(m => ({ role: m.role, content: m.content }));
+  if (prependU) {
+    const firstUser = adaptedMessages.findIndex(m => m.role === 'user');
+    if (firstUser >= 0) {
+      const orig = adaptedMessages[firstUser].content || '';
+      adaptedMessages[firstUser] = {
+        ...adaptedMessages[firstUser],
+        content: orig ? `${prependU}\n\n${orig}` : prependU
+      };
+    }
+  }
 
   const anthropicBody = {
     model: body.model,
     max_tokens: body.max_tokens,
     system: composedSystem,
-    messages: userMessages.map(m => ({
-      role: m.role,
-      content: m.content
-    }))
+    messages: adaptedMessages
   };
 
   // Bug 18: Register controller tagged with provider/baseUrl so saveConfig() only
