@@ -27,9 +27,15 @@ export function extract(step, engine) {
 
 export function extractAll(step, engine) {
   const containers = engine.resolver.findAll(step.containerSelector);
+  // Optional cap: if step.limit is set, only extract the first N containers.
+  // Used by inbox-analysis to keep the AI prompt small (top-N most recent
+  // conversations) rather than classifying the entire 100+ inbox.
+  const limit = engine._resolve(step.limit);
+  const cap = (typeof limit === 'number' && limit > 0) ? Math.min(containers.length, limit) : containers.length;
   const items = [];
 
-  for (const container of containers) {
+  for (let i = 0; i < cap; i++) {
+    const container = containers[i];
     const item = {};
     for (const [fieldName, fieldDef] of Object.entries(step.fields || {})) {
       // Bug 10: support multi-value fields. Without this, multi-valued

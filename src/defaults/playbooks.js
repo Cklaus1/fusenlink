@@ -673,25 +673,32 @@ export const DEFAULT_PLAYBOOKS = {
 
   'inbox-analysis': {
     id: 'inbox-analysis',
-    version: 3,
+    version: 4,
     name: 'Analyze Inbox',
     description: 'AI classifies and prioritizes your LinkedIn inbox',
     urlPattern: 'linkedin\\.com/messaging/',
     selectors: 'linkedin.messaging',
     buttonLabel: 'Analyze Inbox',
     trustLevel: 'auto',
-    settings: { requiresAI: true, maxConversations: 30 },
+    // maxConversations caps how many of the most-recent conversations get sent
+    // to the AI. With ~75 in the inbox the prompt was ~1500 tokens and Sonnet
+    // -> Qwen3.6 took 30-40s. Capped at 20 the prompt is ~400 tokens and the
+    // round-trip drops to ~10-15s. Most actionable items live at the top of
+    // the inbox anyway (most recent activity).
+    settings: { requiresAI: true, maxConversations: 20 },
     steps: [
       { action: 'setVar', var: 'processedCount', value: 0 },
-      { action: 'log', message: 'Scanning inbox...' },
-      { action: 'scroll', direction: 'bottom' },
-      { action: 'wait', ms: 1000 },
-      { action: 'scroll', direction: 'bottom' },
-      { action: 'wait', ms: 1000 },
+      { action: 'log', message: 'Scanning inbox (top 20)...' },
+      // Single short scroll lazy-loads any off-screen rows we might want.
+      // Two scrolls + waits used to be needed to pull the full inbox; with
+      // a cap of 20 we just need the first viewport's worth, which is
+      // always rendered.
+      { action: 'wait', ms: 500 },
       {
         action: 'extractAll',
         var: 'conversations',
         containerSelector: 'conversationItem',
+        limit: '$settings.maxConversations',
         fields: {
           name: { childSelector: 'conversationName', attribute: 'textContent' },
           preview: { childSelector: 'conversationPreview', attribute: 'textContent' },

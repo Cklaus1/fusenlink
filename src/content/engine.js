@@ -172,6 +172,11 @@ export class PlaybookEngine {
     // single run. The popup uses this to dedupe checkpoints against the
     // canonical _finalize entry.
     this._runId = null;
+    // Per-step timings ([{stepIdx, action, durationMs, error?}]) — populated
+    // by _executeStep and attached to the activity-log entry in _finalize.
+    // Lets us see where time goes in a run (e.g. inbox-analysis: 95% in aiCall).
+    this._perfSteps = [];
+    this._stepCounter = 0;
   }
 
   /**
@@ -248,6 +253,24 @@ export class PlaybookEngine {
     }
     Overlay.showSummary(summaryParts.join(' '));
 
+    // Build a compact perf summary: top 5 slowest steps + totals per action.
+    // Full step list would bloat the activity log; the summary is enough to
+    // answer "where did the time go?" without burning storage on every run.
+    const perfSummary = (() => {
+      if (!this._perfSteps?.length) return null;
+      const byAction = {};
+      for (const s of this._perfSteps) {
+        if (!byAction[s.action]) byAction[s.action] = { count: 0, totalMs: 0 };
+        byAction[s.action].count++;
+        byAction[s.action].totalMs += s.durationMs || 0;
+      }
+      const slowest = [...this._perfSteps]
+        .sort((a, b) => (b.durationMs || 0) - (a.durationMs || 0))
+        .slice(0, 5)
+        .map(s => ({ action: s.action, ms: s.durationMs }));
+      return { byAction, slowest };
+    })();
+
     // Log activity
     sendMessage({
       action: MSG.LOG_ACTIVITY,
@@ -261,6 +284,7 @@ export class PlaybookEngine {
         processedCount: result.processedCount,
         skippedCount: result.skippedCount,
         durationMs: Date.now() - this.startTime,
+        ...(perfSummary ? { perf: perfSummary } : {}),
         ...(result.tokensUsed ? { tokensUsed: result.tokensUsed } : {}),
         ...(result.summary ? { summary: result.summary } : {}),
         // Bug 22: surface per-cycle cost breakdown for interactive runs
@@ -489,15 +513,31 @@ export class PlaybookEngine {
    * @param {Object} step
    */
   async _executeStep(step) {
-    // Control flow — handled directly by the engine (no trust gate needed)
+    const stepIdx = this._stepCounter++;
+    const t0 = Date.now();
+    const recordPerf = (extra = {}) => {
+      this._perfSteps.push({ stepIdx, action: step.action, durationMs: Date.now() - t0, ...extra });
+    };
+    // Control flow — handled directly by the engine (no trust gate needed).
+    // We still record perf for these so the breakdown reflects loop/forEach time.
     switch (step.action) {
-      case 'loop':
-        return this._executeLoop(step);
-      case 'forEach':
-        return this._executeForEach(step);
-      case 'conditional':
-        return this._executeConditional(step);
+      case 'loop': {
+        const r = await this._executeLoop(step);
+        recordPerf();
+        return r;
+      }
+      case 'forEach': {
+        const r = await this._executeForEach(step);
+        recordPerf();
+        return r;
+      }
+      case 'conditional': {
+        const r = await this._executeConditional(step);
+        recordPerf();
+        return r;
+      }
       case 'break':
+        recordPerf({ break: true });
         throw new BreakSignal();
     }
 
@@ -553,9 +593,11 @@ export class PlaybookEngine {
 
     try {
       await handler(step, this, Overlay);
+      recordPerf();
     } catch (err) {
       // Bug 35: surface lastError so subsequent steps can check $lastError.
       this.vars.lastError = err && err.message ? err.message : String(err);
+      recordPerf({ error: this.vars.lastError });
       throw err;
     }
   }

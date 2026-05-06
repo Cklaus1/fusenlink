@@ -124,7 +124,7 @@ describe('button-injector', () => {
     expect(stack.style.right).toBe('');
   });
 
-  test('non-feed page positions stack on the right', () => {
+  test('non-feed page also positions stack on the left (consistent across pages)', () => {
     setLocation(
       'https://www.linkedin.com/search/results/people/',
       '/search/results/people/'
@@ -145,8 +145,10 @@ describe('button-injector', () => {
 
     const stack = document.getElementById('li-bulk-button-stack');
     expect(stack).not.toBeNull();
-    expect(stack.style.right).toBe('20px');
-    expect(stack.style.left).toBe('');
+    // Always top-left now (was per-page left/right). Consistent across pages
+    // and avoids overlap with LinkedIn's right-side widgets.
+    expect(stack.style.left).toBe('20px');
+    expect(stack.style.right).toBe('');
   });
 
   test('skips playbooks whose urlPattern does not match', () => {
