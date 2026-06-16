@@ -251,7 +251,7 @@ async function handleHttp(req, res) {
     const response = await sendToExtension(message);
     jsonResponse(res, response);
   } catch (err) {
-    jsonResponse(res, { error: err.message }, 500);
+    jsonResponse(res, { error: err.message }, err.status || 500);
   }
 }
 
@@ -263,16 +263,37 @@ async function handleHttp(req, res) {
  */
 function sendToExtension(message, timeoutMs = 30000) {
   return new Promise((resolve, reject) => {
+    // Guard: the extension may not be connected (Chrome closed, FusenLink not
+    // loaded, or the bridge hasn't dialed in yet). Without this, the .send()
+    // below throws a cryptic "Cannot read properties of null" TypeError.
+    if (!extensionSocket || extensionSocket.readyState !== WebSocket.OPEN) {
+      const err = new Error('Extension not connected — open Chrome with FusenLink loaded and a LinkedIn tab');
+      err.status = 503;
+      reject(err);
+      return;
+    }
+
     const requestId = `req_${++requestCounter}`;
     message._requestId = requestId;
 
     const timer = setTimeout(() => {
       pendingRequests.delete(requestId);
-      reject(new Error('Extension response timeout'));
+      const err = new Error('Extension response timeout');
+      err.status = 504;
+      reject(err);
     }, timeoutMs);
 
     pendingRequests.set(requestId, { resolve, reject, timer });
-    extensionSocket.send(JSON.stringify(message));
+    try {
+      extensionSocket.send(JSON.stringify(message));
+    } catch (sendErr) {
+      // Socket dropped between the readyState check and send (race).
+      clearTimeout(timer);
+      pendingRequests.delete(requestId);
+      const err = new Error('Extension not connected — open Chrome with FusenLink loaded and a LinkedIn tab');
+      err.status = 503;
+      reject(err);
+    }
   });
 }
 
