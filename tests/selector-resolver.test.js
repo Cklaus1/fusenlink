@@ -679,11 +679,11 @@ describe('SelectorResolver', () => {
 
   // ── v4: registry version bumps + new top-of-list strategies ──────────────
   describe('v4 registry — version bumps and walk/heading strategies', () => {
-    test('rotted registries report version 4', () => {
+    test('rotted registries report their current versions', () => {
       const { DEFAULT_SELECTOR_REGISTRIES } = require('../src/defaults/selectors.js');
-      expect(DEFAULT_SELECTOR_REGISTRIES['linkedin.profile'].version).toBe(4);
+      expect(DEFAULT_SELECTOR_REGISTRIES['linkedin.profile'].version).toBe(5);
       expect(DEFAULT_SELECTOR_REGISTRIES['linkedin.feed'].version).toBe(4);
-      expect(DEFAULT_SELECTOR_REGISTRIES['linkedin.connections'].version).toBe(4);
+      expect(DEFAULT_SELECTOR_REGISTRIES['linkedin.connections'].version).toBe(5);
       expect(DEFAULT_SELECTOR_REGISTRIES['linkedin.search'].version).toBe(4);
     });
 
@@ -714,7 +714,9 @@ describe('SelectorResolver', () => {
       const { DEFAULT_SELECTOR_REGISTRIES } = require('../src/defaults/selectors.js');
       const entry = DEFAULT_SELECTOR_REGISTRIES['linkedin.connections'].connectionHeadline;
       expect(entry.strategies[0].type).toBe('walkFromAnchor');
-      expect(entry.strategies[0].relative).toBe('closest-listitem');
+      // 2026 lite UI dropped the [role="listitem"] wrapper, so the walk now
+      // climbs to the /in/ link's parent rather than its closest listitem.
+      expect(entry.strategies[0].relative).toBe('parent');
     });
 
     test('linkedin.feed.postComposer carries scope: modal', () => {

@@ -1,7 +1,7 @@
 {
-  "name": "linkedin-bulk-actions",
-  "version": "1.0.0",
-  "description": "Chrome extension for LinkedIn bulk actions",
+  "name": "fusenlink",
+  "version": "2.0.0",
+  "description": "AI-powered LinkedIn automation via a data-driven playbook engine",
   "main": "background.js",
   "scripts": {
     "test": "jest",
