@@ -15,6 +15,10 @@
   "host_permissions": [
     "*://*.linkedin.com/*"
   ],
+  "optional_host_permissions": [
+    "http://*/*",
+    "https://*/*"
+  ],
   "action": {
     "default_title": "FusenLink",
     "default_popup": "popup.html",

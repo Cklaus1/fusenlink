@@ -532,13 +532,20 @@ export const DEFAULT_SELECTOR_REGISTRIES = {
   },
 
   'linkedin.messaging': {
-    version: 7,
+    version: 8,
     // Anchor inside each conversation list item that links to the thread page.
     // Used by inbox-analysis → draft-reply hand-off (grab thread URLs to navigate).
+    // 2026 lite UI: conversation rows no longer expose an <a href="/messaging/
+    // thread/..."> — navigation is JS-driven and the clickable element is a
+    // <div class="msg-conversation-listitem__link">. The thread URL is no longer
+    // in the DOM, so callers that need to navigate must CLICK this element
+    // rather than read an href (see inbox-analysis result panel). Legacy anchor
+    // strategies are kept last for older LinkedIn layouts.
     conversationLink: {
       strategies: [
-        { type: 'css', value: 'a.msg-conversation-listitem__link' },
+        { type: 'css', value: 'div.msg-conversation-listitem__link' },
         { type: 'css', value: '[class*="msg-conversation-listitem__link"]' },
+        { type: 'css', value: 'a.msg-conversation-listitem__link' },
         { type: 'css', value: 'a[href*="/messaging/thread/"]' }
       ]
     },

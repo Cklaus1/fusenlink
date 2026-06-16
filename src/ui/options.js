@@ -141,16 +141,67 @@ document.addEventListener('DOMContentLoaded', () => {
 if (aiForm) {
   aiForm.addEventListener('submit', (e) => {
     e.preventDefault();
-    chrome.runtime.sendMessage({
-      action: 'aiConfigure',
-      config: {
-        provider: aiProvider.value,
-        baseUrl: aiBaseUrl.value,
-        apiKey: aiApiKey.value,
-        model: aiModel.value
-      }
-    }, () => {
-      if (!chrome.runtime.lastError) showToast();
+    const config = {
+      provider: aiProvider.value,
+      baseUrl: aiBaseUrl.value,
+      apiKey: aiApiKey.value,
+      model: aiModel.value
+    };
+    const save = () => {
+      chrome.runtime.sendMessage({ action: 'aiConfigure', config }, () => {
+        if (!chrome.runtime.lastError) showToast();
+      });
+    };
+    // MV3: the extension can only fetch origins it holds host permission for.
+    // The manifest ships with linkedin.com only; a self-hosted gateway (Ollama,
+    // vLLM, a tailnet proxy, etc.) lives on some other origin the user enters
+    // here. Request that exact origin at save time so the AI call isn't blocked
+    // with an opaque "Failed to fetch". Built-in cloud providers (api.openai.com,
+    // api.anthropic.com, openrouter.ai) and localhost don't need this.
+    requestOriginPermission(config.baseUrl, save);
+  });
+}
+
+/**
+ * Request optional host permission for a custom baseUrl's origin, then continue.
+ * No-ops (just calls `next`) when the origin can't be parsed or is already
+ * granted. Failures are non-fatal — the save proceeds and the AI call will
+ * surface a clear error if the grant was declined.
+ */
+function requestOriginPermission(baseUrl, next) {
+  let host;
+  let originPattern;
+  try {
+    const u = new URL(baseUrl);
+    host = u.hostname.toLowerCase();
+    originPattern = `${u.origin}/*`;
+  } catch {
+    next();
+    return;
+  }
+  // Cloud providers and localhost don't need an optional grant: the well-known
+  // SaaS endpoints aren't user-specific origins worth prompting for, and
+  // localhost is reachable without host permission. Only self-hosted/tailnet
+  // gateways on arbitrary hosts need the prompt.
+  const skipGrant =
+    host === 'localhost' ||
+    host === '127.0.0.1' ||
+    /(^|\.)openai\.com$/.test(host) ||
+    /(^|\.)anthropic\.com$/.test(host) ||
+    /(^|\.)openrouter\.ai$/.test(host) ||
+    /(^|\.)nvidia\.com$/.test(host);
+  if (skipGrant || !chrome.permissions || !chrome.permissions.request) {
+    next();
+    return;
+  }
+  chrome.permissions.contains({ origins: [originPattern] }, (has) => {
+    if (chrome.runtime.lastError || has) {
+      next();
+      return;
+    }
+    chrome.permissions.request({ origins: [originPattern] }, () => {
+      // Ignore lastError / denial — save anyway so config persists.
+      next();
     });
   });
 }
